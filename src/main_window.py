@@ -1265,8 +1265,9 @@ class MainWindow(QMainWindow):
                 # 单通道模式
                 averaged_frame = self._compute_averaged_frame(data, point_num)
                 if averaged_frame is not None:
-                    # 显示完整分辨率的平均曲线
-                    self.plot_curve_1[0].setData(averaged_frame)
+                    # 生成x轴数据（从0开始）
+                    x_axis = np.arange(len(averaged_frame))
+                    self.plot_curve_1[0].setData(x_axis, averaged_frame)
                     # 清空其他曲线
                     for i in range(1, 4):
                         self.plot_curve_1[i].setData([])
@@ -1286,23 +1287,38 @@ class MainWindow(QMainWindow):
                     log.debug("FFT calculation requested")
 
             elif channel_num == 2:
-                # 双通道模式
+                # 双通道模式：第一通道显示在时域图，第二通道显示在FFT图位置
                 if len(data.shape) == 1:
                     data = data.reshape(-1, channel_num)
 
-                for ch in range(2):
-                    ch_data = data[:, ch] if len(data.shape) > 1 else data
-                    averaged_frame = self._compute_averaged_frame(ch_data, point_num, single_channel=True)
+                # 第一通道显示在时域图（plot_widget_1）
+                ch0_data = data[:, 0]
+                averaged_frame_ch0 = self._compute_averaged_frame(ch0_data, point_num, single_channel=True)
+                if averaged_frame_ch0 is not None:
+                    # 生成x轴数据（从0开始）
+                    x_axis = np.arange(len(averaged_frame_ch0))
+                    self.plot_curve_1[0].setData(x_axis, averaged_frame_ch0)
+                    # 清空其他时域曲线
+                    for i in range(1, 4):
+                        self.plot_curve_1[i].setData([])
 
-                    if averaged_frame is not None:
-                        # 显示完整分辨率的平均曲线
-                        self.plot_curve_1[ch].setData(averaged_frame)
+                # 第二通道显示在FFT图位置（plot_widget_2）
+                ch1_data = data[:, 1]
+                averaged_frame_ch1 = self._compute_averaged_frame(ch1_data, point_num, single_channel=True)
+                if averaged_frame_ch1 is not None:
+                    # 生成x轴数据（从0开始）
+                    x_axis = np.arange(len(averaged_frame_ch1))
+                    self.spectrum_curve.setData(x_axis, averaged_frame_ch1)
 
-                # 清空其他曲线
-                for i in range(2, 4):
-                    self.plot_curve_1[i].setData([])
+                    # 设置FFT图为时域显示模式
+                    self.plot_widget_2.setLogMode(x=False, y=False)
+                    self.plot_widget_2.enableAutoRange()
+                    self.plot_widget_2.setLabel('bottom', 'Sample Index',
+                                              **{'font-family': 'Times New Roman', 'font-size': '12pt'})
+                    self.plot_widget_2.setLabel('left', 'Amplitude (Channel 2)',
+                                              **{'font-family': 'Times New Roman', 'font-size': '12pt'})
 
-                log.debug(f"Dual channel: processed {channel_num} channels")
+                log.debug(f"Dual channel: ch0 on time domain plot, ch1 on spectrum plot")
 
             self._last_time_domain_update = current_time
 
@@ -1477,17 +1493,15 @@ class MainWindow(QMainWindow):
             self.psd_check.setEnabled(is_single_channel)
 
             if not is_single_channel:
-                # 双通道时强制关闭spectrum
+                # 双通道时强制关闭spectrum选项
                 self.spectrum_enable_check.setChecked(False)
-                # 隐藏FFT显示图
-                if hasattr(self, 'plot_widget_2'):
-                    self.plot_widget_2.setVisible(False)
-                log.debug("Dual channel mode: FFT disabled")
+                log.debug("Dual channel mode: FFT disabled, Ch2 will display on spectrum plot")
             else:
-                # 单通道时恢复FFT图显示
-                if hasattr(self, 'plot_widget_2'):
-                    self.plot_widget_2.setVisible(True)
-                log.debug("Single channel mode: FFT available")
+                log.debug("Single channel mode: FFT available on spectrum plot")
+
+            # FFT子图始终可见（双通道时用于显示第二通道）
+            if hasattr(self, 'plot_widget_2'):
+                self.plot_widget_2.setVisible(True)
 
         self._update_calculated_values()
 
