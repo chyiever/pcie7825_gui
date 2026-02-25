@@ -207,3 +207,13 @@ MONITOR_UPDATE_INTERVALS = {
     'system_status_s': 10,
     'performance_log_s': 30,
 }
+
+# ----- RAW DATA OPTIMIZATION CONSTANTS -----
+
+RAW_DATA_CONFIG = {
+    'gui_frame_limit': 4,               # 仅传输前4帧给GUI
+    'time_domain_update_s': 1.0,        # 时域图更新间隔(秒)
+    'fft_update_s': 3.0,               # FFT更新间隔(秒)
+    'frame_averaging': True,            # 启用4帧平均
+    'max_gui_update_fps': 1.0,         # GUI最大更新频率(FPS)
+}

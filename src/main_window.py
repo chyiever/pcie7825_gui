@@ -34,12 +34,13 @@ from config import (
     ClockSource, TriggerDirection, DataSource, DisplayMode,
     CHANNEL_NUM_OPTIONS, DATA_SOURCE_OPTIONS, CENTER_FREQ_OPTIONS,
     validate_point_num, calculate_fiber_length, calculate_data_rate_mbps,
-    OPTIMIZED_BUFFER_SIZES, MONITOR_UPDATE_INTERVALS
+    OPTIMIZED_BUFFER_SIZES, MONITOR_UPDATE_INTERVALS, RAW_DATA_CONFIG
 )
 from wfbg7825_api import WFBG7825API, WFBG7825Error
 from acquisition_thread import AcquisitionThread, SimulatedAcquisitionThread
 from data_saver import FrameBasedFileSaver
 from spectrum_analyzer import RealTimeSpectrumAnalyzer
+from fft_worker import FFTWorkerThread
 from logger import get_logger
 
 log = get_logger("gui")
@@ -57,6 +58,7 @@ class MainWindow(QMainWindow):
         self.acq_thread: Optional[AcquisitionThread] = None
         self.data_saver: Optional[FrameBasedFileSaver] = None
         self.spectrum_analyzer = RealTimeSpectrumAnalyzer()
+        self.fft_worker = FFTWorkerThread(self)  # 新增FFT工作线程
 
         self.params = AllParams()
 
@@ -75,6 +77,11 @@ class MainWindow(QMainWindow):
         self._gui_update_count = 0
         self._raw_data_count = 0
         self._last_raw_display_time = 0
+
+        # Raw data optimization tracking
+        self._last_time_domain_update = 0
+        self._last_fft_update = 0
+        self._raw_frame_buffer = []  # 存储用于平均的帧
 
         # System monitoring
         self._last_system_update = 0
@@ -1008,6 +1015,10 @@ class MainWindow(QMainWindow):
         self.acq_thread.error_occurred.connect(self._on_error)
         self.acq_thread.acquisition_stopped.connect(self._on_acquisition_stopped)
 
+        # 连接FFT工作线程信号
+        self.fft_worker.fft_ready.connect(self._on_fft_ready)
+        self.fft_worker.error_occurred.connect(self._on_fft_error)
+
         self.acq_thread.start()
 
         self._set_start_btn_running()
@@ -1026,6 +1037,10 @@ class MainWindow(QMainWindow):
 
         if self.acq_thread is not None:
             self.acq_thread.stop()
+
+        # 停止FFT工作线程
+        if self.fft_worker is not None:
+            self.fft_worker.stop()
 
         if not self.simulation_mode and self.api is not None:
             try:
@@ -1079,20 +1094,29 @@ class MainWindow(QMainWindow):
 
     @pyqtSlot(np.ndarray, int, int)
     def _on_raw_data(self, data: np.ndarray, data_type: int, channel_num: int):
+        """
+        处理Raw数据信号，应用新的优化策略:
+        - 数据已在采集线程中限制为前4帧
+        - 应用新的更新间隔控制
+        """
         self._data_count += 1
         self._raw_data_count += 1
 
+        # 数据保存（如果启用）
         if self.data_saver is not None and self.data_saver.is_running:
             self.data_saver.save_frame(data)
 
-        current_time = time.time()
-        if (current_time - self._last_raw_display_time) >= 1.0:
-            try:
-                self._update_raw_display(data, channel_num)
-                self._gui_update_count += 1
-                self._last_raw_display_time = current_time
-            except Exception as e:
-                log.exception(f"Error in _update_raw_display: {e}")
+        # 使用新的显示更新逻辑（内部有间隔控制）
+        try:
+            self._update_raw_display(data, channel_num)
+            self._gui_update_count += 1
+        except Exception as e:
+            log.exception(f"Error in _update_raw_display: {e}")
+
+        # 更新统计信息（每10次更新一次）
+        if self._raw_data_count % 10 == 0:
+            log.debug(f"Raw data processed: count={self._raw_data_count}, "
+                     f"data_shape={data.shape}, channels={channel_num}")
 
     @pyqtSlot(np.ndarray, int)
     def _on_monitor_data(self, data: np.ndarray, channel_num: int):
@@ -1110,6 +1134,51 @@ class MainWindow(QMainWindow):
     def _on_error(self, message: str):
         log.error(f"Acquisition error: {message}")
         self.statusBar.showMessage(f"Error: {message}", 5000)
+
+    @pyqtSlot(np.ndarray, np.ndarray, float)
+    def _on_fft_ready(self, freq: np.ndarray, spectrum: np.ndarray, df: float):
+        """处理FFT计算完成的结果"""
+        try:
+            self._display_fft_result(freq, spectrum, df)
+            log.debug(f"FFT result displayed: {len(freq)} points")
+        except Exception as e:
+            log.exception(f"Error displaying FFT result: {e}")
+
+    @pyqtSlot(str)
+    def _on_fft_error(self, message: str):
+        """处理FFT计算错误"""
+        log.error(f"FFT calculation error: {message}")
+        self.statusBar.showMessage(f"FFT Error: {message}", 3000)
+
+    def _display_fft_result(self, freq: np.ndarray, spectrum: np.ndarray, df: float):
+        """显示FFT计算结果"""
+        try:
+            self.plot_widget_2.setLogMode(x=False, y=False)
+
+            # 滤波有效频率范围
+            nyquist = self._sample_rate / 2 if hasattr(self, '_sample_rate') else 500e6
+            valid_indices = (freq >= 1.0) & (freq <= nyquist)
+
+            freq_filtered = freq[valid_indices]
+            spectrum_filtered = spectrum[valid_indices]
+
+            if len(freq_filtered) > 0:
+                # 频率显示为MHz
+                freq_display = freq_filtered / 1e6
+                self.spectrum_curve.setData(freq_display, spectrum_filtered)
+
+                self.plot_widget_2.enableAutoRange(axis='x')
+                self.plot_widget_2.setLabel('bottom', 'Frequency (MHz)',
+                                          **{'font-family': 'Times New Roman', 'font-size': '12pt'})
+
+                if self.params.display.psd_enable:
+                    self.plot_widget_2.setLabel('left', 'PSD (dB/Hz)',
+                                              **{'font-family': 'Times New Roman', 'font-size': '12pt'})
+                else:
+                    self.plot_widget_2.setLabel('left', 'Power (dB)',
+                                              **{'font-family': 'Times New Roman', 'font-size': '12pt'})
+        except Exception as e:
+            log.warning(f"FFT display error: {e}")
 
     # ----- DISPLAY UPDATE -----
 
@@ -1174,40 +1243,131 @@ class MainWindow(QMainWindow):
             self.frames_label.setText(f"Frames: {self.acq_thread.frames_acquired}")
 
     def _update_raw_display(self, data: np.ndarray, channel_num: int):
+        """
+        更新Raw数据显示，实现新的优化显示机制:
+        1. 单通道：4帧平均显示，可选FFT
+        2. 双通道：分别显示每通道4帧平均，禁用FFT
+        3. 时域图更新间隔至少1秒
+        4. FFT更新间隔至少3秒
+        """
+        current_time = time.time()
         point_num = self.params.basic.point_num_per_scan
-        frame_num = self.params.display.frame_num
 
-        if channel_num == 1:
-            for i in range(min(4, frame_num)):
-                start = i * point_num
-                end = start + point_num
-                if end <= len(data):
-                    raw_frame = data[start:end]
-                    downsampled = raw_frame[::10]
-                    self.plot_curve_1[i].setData(downsampled)
-                else:
+        # 检查时域图更新间隔
+        time_domain_interval = RAW_DATA_CONFIG['time_domain_update_s']
+        if (current_time - self._last_time_domain_update) < time_domain_interval:
+            return
+
+        log.debug(f"Updating raw display: data_shape={data.shape}, channels={channel_num}")
+
+        try:
+            if channel_num == 1:
+                # 单通道模式
+                averaged_frame = self._compute_averaged_frame(data, point_num)
+                if averaged_frame is not None:
+                    # 显示完整分辨率的平均曲线
+                    self.plot_curve_1[0].setData(averaged_frame)
+                    # 清空其他曲线
+                    for i in range(1, 4):
+                        self.plot_curve_1[i].setData([])
+
+                    log.debug(f"Single channel: averaged {len(data)//point_num} frames, "
+                             f"display {len(averaged_frame)} points")
+
+                # FFT处理（如果启用且间隔满足）
+                fft_interval = RAW_DATA_CONFIG['fft_update_s']
+                if (self.params.display.spectrum_enable and
+                    (current_time - self._last_fft_update) >= fft_interval):
+
+                    # 使用单帧原始数据计算FFT（1GHz采样率）
+                    single_frame = data[:point_num]
+                    self.fft_worker.calculate_fft(single_frame, self.params.display.psd_enable)
+                    self._last_fft_update = current_time
+                    log.debug("FFT calculation requested")
+
+            elif channel_num == 2:
+                # 双通道模式
+                if len(data.shape) == 1:
+                    data = data.reshape(-1, channel_num)
+
+                for ch in range(2):
+                    ch_data = data[:, ch] if len(data.shape) > 1 else data
+                    averaged_frame = self._compute_averaged_frame(ch_data, point_num, single_channel=True)
+
+                    if averaged_frame is not None:
+                        # 显示完整分辨率的平均曲线
+                        self.plot_curve_1[ch].setData(averaged_frame)
+
+                # 清空其他曲线
+                for i in range(2, 4):
                     self.plot_curve_1[i].setData([])
 
-            if self.params.display.spectrum_enable and point_num <= len(data):
-                sample_rate = 1e9  # Fixed 1GSps
-                self._update_spectrum(data[:point_num], sample_rate,
-                                     self.params.display.psd_enable, 'short')
-        else:
-            if len(data.shape) == 1:
-                data = data.reshape(-1, channel_num)
-            for ch in range(min(channel_num, 4)):
-                if point_num <= len(data):
-                    raw_channel = data[:point_num, ch]
-                    downsampled = raw_channel[::10]
-                    self.plot_curve_1[ch].setData(downsampled)
+                log.debug(f"Dual channel: processed {channel_num} channels")
 
-            if self.params.display.spectrum_enable and point_num <= len(data):
-                sample_rate = 1e9
-                self._update_spectrum(data[:point_num, 0], sample_rate,
-                                     self.params.display.psd_enable, 'short')
+            self._last_time_domain_update = current_time
 
+        except Exception as e:
+            log.exception(f"Error in _update_raw_display: {e}")
+
+        # 更新帧计数显示
         if self.acq_thread is not None:
             self.frames_label.setText(f"Frames: {self.acq_thread.frames_acquired}")
+
+    def _compute_averaged_frame(self, data: np.ndarray, point_num: int, single_channel: bool = False) -> Optional[np.ndarray]:
+        """
+        计算4帧平均数据
+
+        Args:
+            data: 输入数据
+            point_num: 每帧点数
+            single_channel: 是否为单通道数据
+
+        Returns:
+            平均后的数据，如果数据不足则返回None
+        """
+        try:
+            if single_channel:
+                # 单通道数据处理
+                total_points = len(data)
+                available_frames = total_points // point_num
+            else:
+                # 可能是多维数据
+                if len(data.shape) > 1:
+                    total_points = data.shape[0]
+                else:
+                    total_points = len(data)
+                available_frames = total_points // point_num
+
+            if available_frames < 1:
+                log.warning(f"Insufficient data for frame averaging: {total_points} points, need {point_num}")
+                return None
+
+            # 最多使用4帧进行平均
+            frames_to_use = min(available_frames, 4)
+
+            if single_channel or len(data.shape) == 1:
+                # 一维数据
+                frames = []
+                for i in range(frames_to_use):
+                    start = i * point_num
+                    end = start + point_num
+                    frames.append(data[start:end])
+            else:
+                # 多维数据（应该不会到达这里，但保险起见）
+                frames = []
+                for i in range(frames_to_use):
+                    start = i * point_num
+                    end = start + point_num
+                    frames.append(data[start:end, 0])  # 取第一列
+
+            # 计算平均并取整
+            frames_array = np.array(frames)
+            averaged = np.mean(frames_array, axis=0)
+            return averaged.astype(np.int32)  # 取整数
+
+        except Exception as e:
+            log.exception(f"Error computing averaged frame: {e}")
+            return None
 
     def _update_monitor_display(self, data: np.ndarray, channel_num: int):
         fbg_num = self._fbg_num_per_ch
@@ -1304,6 +1464,31 @@ class MainWindow(QMainWindow):
         self._update_calculated_values()
 
     def _on_channel_changed(self, index: int):
+        """处理通道数量变化，控制FFT功能可用性"""
+        channel_num = self.channel_combo.currentData() or 1
+        data_source = self.data_source_combo.currentData() or DataSource.RAW
+
+        # Raw数据模式下的FFT控制逻辑
+        if data_source in [DataSource.RAW, DataSource.AMPLITUDE]:
+            is_single_channel = (channel_num == 1)
+
+            # 双通道时禁用spectrum相关选项
+            self.spectrum_enable_check.setEnabled(is_single_channel)
+            self.psd_check.setEnabled(is_single_channel)
+
+            if not is_single_channel:
+                # 双通道时强制关闭spectrum
+                self.spectrum_enable_check.setChecked(False)
+                # 隐藏FFT显示图
+                if hasattr(self, 'plot_widget_2'):
+                    self.plot_widget_2.setVisible(False)
+                log.debug("Dual channel mode: FFT disabled")
+            else:
+                # 单通道时恢复FFT图显示
+                if hasattr(self, 'plot_widget_2'):
+                    self.plot_widget_2.setVisible(True)
+                log.debug("Single channel mode: FFT available")
+
         self._update_calculated_values()
 
     def _browse_save_path(self):

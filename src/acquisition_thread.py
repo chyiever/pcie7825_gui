@@ -14,7 +14,7 @@ from typing import Optional
 from PyQt5.QtCore import QThread, pyqtSignal, QMutex, QWaitCondition
 
 from wfbg7825_api import WFBG7825API, WFBG7825Error
-from config import DataSource, AllParams, POLLING_CONFIG, OPTIMIZED_BUFFER_SIZES
+from config import DataSource, AllParams, POLLING_CONFIG, OPTIMIZED_BUFFER_SIZES, RAW_DATA_CONFIG
 from logger import get_logger
 
 log = get_logger("acq_thread")
@@ -191,7 +191,7 @@ class AcquisitionThread(QThread):
             self.acquisition_stopped.emit()
 
     def _read_raw_data(self):
-        """Read raw/amplitude data."""
+        """Read raw/amplitude data with GUI data optimization."""
         points_per_ch = self._total_point_num * self._frame_num
 
         data, points_returned = self.api.read_data(points_per_ch, self._channel_num)
@@ -200,7 +200,19 @@ class AcquisitionThread(QThread):
         if self._channel_num > 1:
             data = data.reshape(-1, self._channel_num)
 
-        self._pending_raw_data = (data, self._data_source, self._channel_num)
+        # 优化：仅传输前N帧给GUI，减少数据传输量
+        gui_frame_limit = RAW_DATA_CONFIG['gui_frame_limit']
+        points_for_gui = self._total_point_num * gui_frame_limit
+
+        if self._channel_num > 1:
+            gui_data = data[:points_for_gui, :]
+        else:
+            gui_data = data[:points_for_gui]
+
+        log.debug(f"Raw data: total={len(data)}, gui={len(gui_data)} "
+                  f"(reduction: {(1-len(gui_data)/len(data))*100:.1f}%)")
+
+        self._pending_raw_data = (gui_data, self._data_source, self._channel_num)
         self._emit_if_ready()
 
     def _read_phase_data(self):
