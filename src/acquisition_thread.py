@@ -14,7 +14,7 @@ from typing import Optional
 from PyQt5.QtCore import QThread, pyqtSignal, QMutex, QWaitCondition
 
 from wfbg7825_api import WFBG7825API, WFBG7825Error
-from config import DataSource, AllParams, POLLING_CONFIG, OPTIMIZED_BUFFER_SIZES, RAW_DATA_CONFIG
+from config import DataSource, AllParams, POLLING_CONFIG, OPTIMIZED_BUFFER_SIZES, RAW_DATA_CONFIG, RAW_SAMPLING_CONFIG
 from logger import get_logger
 
 log = get_logger("acq_thread")
@@ -65,6 +65,11 @@ class AcquisitionThread(QThread):
         self._low_freq_interval = POLLING_CONFIG['low_freq_interval_ms'] / 1000.0
         self._buffer_threshold_high = POLLING_CONFIG['buffer_threshold_high']
         self._buffer_threshold_low = POLLING_CONFIG['buffer_threshold_low']
+
+        # RAW数据按需采样状态
+        self._last_time_domain_sample = 0
+        self._last_fft_sample = 0
+        self._raw_sampling_enabled = RAW_SAMPLING_CONFIG['enable_on_demand']
 
         log.info("AcquisitionThread initialized")
 
@@ -123,12 +128,236 @@ class AcquisitionThread(QThread):
                 # Determine expected data size based on data source
                 if self._data_source == DataSource.PHASE:
                     expected_points = self._fbg_num_per_ch * self._frame_num
+                    # Phase模式：连续采集
+                    self._continuous_acquisition_step(expected_points)
                 else:
-                    expected_points = self._total_point_num * self._frame_num
+                    # Raw/Amplitude模式：检查是否使用按需采样
+                    if self._raw_sampling_enabled:
+                        self._on_demand_sampling_step()
+                    else:
+                        expected_points = self._total_point_num * self._frame_num
+                        self._continuous_acquisition_step(expected_points)
 
-                # Wait for enough data in buffer
-                wait_count = 0
-                while self._running:
+                loop_time = (time.perf_counter() - loop_start) * 1000
+                if loop_time > 100:
+                    log.warning(f"Slow loop iteration: {loop_time:.1f}ms")
+
+        except Exception as e:
+            log.exception(f"Unexpected acquisition error: {e}")
+            self.error_occurred.emit(f"Acquisition error: {e}")
+
+        finally:
+            log.info(f"=== Acquisition thread stopped === (loops={self._loop_count}, frames={self._frames_acquired})")
+            self.acquisition_stopped.emit()
+
+    def _continuous_acquisition_step(self, expected_points):
+        """连续采集的单步处理"""
+        # Wait for enough data in buffer
+        wait_count = 0
+        while self._running:
+            try:
+                points_in_buffer = self.api.query_buffer_points()
+
+                if wait_count % 100 == 0:
+                    buffer_mb = points_in_buffer * self._channel_num * 2 // (1024 * 1024)
+                    self.buffer_status.emit(points_in_buffer, buffer_mb)
+
+                if points_in_buffer >= expected_points:
+                    break
+
+                # Check if stop was requested during wait
+                if not self._running:
+                    break
+
+                self._adjust_polling_interval(points_in_buffer, expected_points)
+                time.sleep(self._current_polling_interval)
+                wait_count += 1
+
+                if wait_count > 5000:
+                    log.error(f"Timeout waiting for data! in_buf={points_in_buffer}, expected={expected_points}")
+                    self.error_occurred.emit("Timeout waiting for data")
+                    break
+            except Exception as e:
+                if not self._running:
+                    break
+                log.warning(f"Error querying buffer: {e}")
+                time.sleep(self._current_polling_interval)
+                wait_count += 1
+
+        if not self._running:
+            return
+
+        # Read data
+        try:
+            # Check stop before expensive read operation
+            if not self._running:
+                return
+
+            if self._data_source == DataSource.PHASE:
+                self._read_phase_data()
+            else:
+                self._read_raw_data()
+
+            # Check stop after read operation
+            if not self._running:
+                return
+        except Exception as e:
+            if not self._running:
+                return
+            log.error(f"Read error: {e}")
+            self.error_occurred.emit(str(e))
+            time.sleep(0.1)
+            return
+
+        self._frames_acquired += self._frame_num
+
+    def _on_demand_sampling_step(self):
+        """RAW数据按需采样处理"""
+        current_time = time.time()
+
+        # 检查是否需要时域图采样
+        time_domain_interval = RAW_SAMPLING_CONFIG['time_domain_interval_s']
+        need_time_domain = (current_time - self._last_time_domain_sample) >= time_domain_interval
+
+        # 检查是否需要FFT采样
+        fft_interval = RAW_SAMPLING_CONFIG['fft_interval_s']
+        need_fft = (current_time - self._last_fft_sample) >= fft_interval
+
+        # 如果都不需要，短暂休眠后继续
+        if not need_time_domain and not need_fft:
+            time.sleep(0.1)  # 100ms休眠，减少CPU占用
+            return
+
+        # 执行采样
+        if need_time_domain:
+            self._sample_for_time_domain(current_time)
+
+        if need_fft:
+            self._sample_for_fft(current_time)
+
+    def _sample_for_time_domain(self, current_time):
+        """采样用于时域图显示"""
+        frames_needed = RAW_SAMPLING_CONFIG['time_domain_frames']
+        points_needed = self._total_point_num * frames_needed
+
+        log.debug(f"Sampling {frames_needed} frames for time domain display")
+
+        # 等待足够的数据
+        if not self._wait_for_data(points_needed):
+            return
+
+        # 读取数据
+        try:
+            data, points_returned = self.api.read_data(points_needed, self._channel_num)
+
+            if self._channel_num > 1:
+                data = data.reshape(-1, self._channel_num)
+
+            # 计算4帧平均
+            averaged_data = self._compute_frame_average(data, frames_needed)
+
+            # 发送到GUI
+            self.data_ready.emit(averaged_data, self._data_source, self._channel_num)
+
+            self._frames_acquired += frames_needed
+            self._bytes_acquired += len(data) * 2
+            self._last_time_domain_sample = current_time
+
+            log.debug(f"Time domain sampling completed: {frames_needed} frames averaged")
+
+        except Exception as e:
+            log.error(f"Time domain sampling error: {e}")
+
+    def _sample_for_fft(self, current_time):
+        """采样用于FFT计算"""
+        frames_needed = RAW_SAMPLING_CONFIG['fft_frames']
+        points_needed = self._total_point_num * frames_needed
+
+        log.debug(f"Sampling {frames_needed} frame for FFT calculation")
+
+        # 等待足够的数据
+        if not self._wait_for_data(points_needed):
+            return
+
+        # 读取数据
+        try:
+            data, points_returned = self.api.read_data(points_needed, self._channel_num)
+
+            # 取单通道数据进行FFT
+            if self._channel_num > 1:
+                single_frame = data[:self._total_point_num]  # 第一通道
+            else:
+                single_frame = data[:self._total_point_num]
+
+            # 发送到FFT工作线程
+            if hasattr(self.parent(), 'fft_worker') and self.parent().fft_worker:
+                self.parent().fft_worker.calculate_fft(single_frame, False)  # 不使用PSD
+
+            self._frames_acquired += frames_needed
+            self._bytes_acquired += len(data) * 2
+            self._last_fft_sample = current_time
+
+            log.debug(f"FFT sampling completed: {frames_needed} frame sent to FFT worker")
+
+        except Exception as e:
+            log.error(f"FFT sampling error: {e}")
+
+    def _wait_for_data(self, expected_points):
+        """等待足够的数据积累"""
+        wait_count = 0
+        while self._running:
+            try:
+                points_in_buffer = self.api.query_buffer_points()
+
+                if points_in_buffer >= expected_points:
+                    return True
+
+                if not self._running:
+                    return False
+
+                time.sleep(0.01)  # 10ms轮询
+                wait_count += 1
+
+                if wait_count > 1000:  # 10秒超时
+                    log.warning(f"Timeout waiting for data: need {expected_points}, have {points_in_buffer}")
+                    return False
+
+            except Exception as e:
+                if not self._running:
+                    return False
+                log.warning(f"Error waiting for data: {e}")
+                time.sleep(0.1)
+
+        return False
+
+    def _compute_frame_average(self, data, frame_count):
+        """计算多帧平均"""
+        try:
+            if self._channel_num > 1:
+                # 多通道：每通道分别平均
+                points_per_frame = self._total_point_num
+                averaged_data = np.zeros((points_per_frame, self._channel_num), dtype=np.float32)
+
+                for ch in range(self._channel_num):
+                    ch_data = data[:, ch]
+                    frames = ch_data.reshape(frame_count, points_per_frame)
+                    averaged_data[:, ch] = np.mean(frames, axis=0)
+
+                return averaged_data.astype(np.int16)
+            else:
+                # 单通道
+                points_per_frame = self._total_point_num
+                frames = data.reshape(frame_count, points_per_frame)
+                averaged = np.mean(frames, axis=0)
+                return averaged.astype(np.int16)
+
+        except Exception as e:
+            log.error(f"Frame averaging error: {e}")
+            # 失败时返回第一帧
+            if self._channel_num > 1:
+                return data[:self._total_point_num, :].astype(np.int16)
+            else:
+                return data[:self._total_point_num].astype(np.int16)
                     try:
                         points_in_buffer = self.api.query_buffer_points()
 

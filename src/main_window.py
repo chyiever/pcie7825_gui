@@ -35,7 +35,7 @@ from config import (
     ClockSource, TriggerDirection, DataSource, DisplayMode,
     CHANNEL_NUM_OPTIONS, DATA_SOURCE_OPTIONS, CENTER_FREQ_OPTIONS,
     validate_point_num, calculate_fiber_length, calculate_data_rate_mbps,
-    OPTIMIZED_BUFFER_SIZES, MONITOR_UPDATE_INTERVALS, RAW_DATA_CONFIG
+    OPTIMIZED_BUFFER_SIZES, MONITOR_UPDATE_INTERVALS, RAW_DATA_CONFIG, RAW_SAMPLING_CONFIG
 )
 from wfbg7825_api import WFBG7825API, WFBG7825Error
 from acquisition_thread import AcquisitionThread, SimulatedAcquisitionThread
