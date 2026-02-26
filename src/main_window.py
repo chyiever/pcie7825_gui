@@ -185,27 +185,12 @@ class MainWindow(QMainWindow):
 
     def _apply_uniform_fonts(self):
         """统一设置参数控件字体"""
-        # 标题字体：Arial 9pt 加粗（已在QGroupBox中设置）
+        # 字体设置主要通过StyleSheet完成
+        # 这里只处理特殊情况或样式表无法覆盖的控件
 
-        # 参数控件字体：Times New Roman 8pt
-        control_font = QFont("Times New Roman", 8)
-
-        # 递归设置所有参数控件字体
-        def set_widget_fonts(widget):
-            if isinstance(widget, (QLabel, QLineEdit, QComboBox, QSpinBox,
-                                   QDoubleSpinBox, QCheckBox, QRadioButton, QPushButton)):
-                # 排除标题标签（通常使用较大字体）
-                if not isinstance(widget, QLabel) or widget.font().pointSize() <= 12:
-                    widget.setFont(control_font)
-
-            # 递归处理子控件
-            for child in widget.children():
-                if isinstance(child, QWidget):
-                    set_widget_fonts(child)
-
-        # 应用到参数面板
-        if hasattr(self, 'parameter_panel'):
-            set_widget_fonts(self.parameter_panel)
+        # 确保组框标题使用正确字体
+        for child in self.parameter_panel.findChildren(QGroupBox):
+            child.setFont(QFont("Arial", 9, QFont.Bold))
 
     def _create_parameter_panel(self) -> QWidget:
         # Use scroll area to handle small screens
@@ -225,36 +210,34 @@ class MainWindow(QMainWindow):
 
         panel.setStyleSheet("""
             QGroupBox {
-                font-family: 'SimHei', 'Microsoft YaHei';
-                font-size: 12px;
+                font-family: 'Arial';
+                font-size: 9px;
                 font-weight: bold;
             }
             QLabel {
-                font-family: 'Times New Roman', 'SimHei';
-                font-size: 11px;
+                font-family: 'Times New Roman';
+                font-size: 8px;
             }
             QSpinBox, QDoubleSpinBox, QComboBox, QLineEdit {
                 font-family: 'Times New Roman';
-                font-size: 11px;
+                font-size: 8px;
                 max-height: 22px;
             }
             QComboBox {
                 max-width: 100px;
             }
             QRadioButton, QCheckBox {
-                font-family: 'Times New Roman', 'SimHei';
-                font-size: 10px;
+                font-family: 'Times New Roman';
+                font-size: 8px;
             }
             QPushButton {
-                font-family: 'Times New Roman', 'SimHei';
-                font-size: 12px;
+                font-family: 'Times New Roman';
+                font-size: 8px;
             }
         """)
 
         # ===== Basic Parameters =====
         basic_group = QGroupBox("Basic Parameters")
-        # 设置标题字体：Arial 加粗
-        basic_group.setFont(QFont("Arial", 9, QFont.Bold))
         basic_layout = QGridLayout(basic_group)
         basic_layout.setSpacing(4)
         basic_layout.setContentsMargins(8, 12, 8, 8)
@@ -337,8 +320,6 @@ class MainWindow(QMainWindow):
 
         # ===== Upload Parameters =====
         upload_group = QGroupBox("Upload Parameters")
-        # 设置标题字体：Arial 加粗
-        upload_group.setFont(QFont("Arial", 9, QFont.Bold))
         upload_layout = QGridLayout(upload_group)
         upload_layout.setSpacing(4)
         upload_layout.setContentsMargins(8, 12, 8, 8)
@@ -364,8 +345,6 @@ class MainWindow(QMainWindow):
 
         # ===== Phase Demod Parameters (simplified for 7825) =====
         phase_group = QGroupBox("Phase Demod Parameters")
-        # 设置标题字体：Arial 加粗
-        phase_group.setFont(QFont("Arial", 9, QFont.Bold))
         phase_layout = QGridLayout(phase_group)
         phase_layout.setSpacing(4)
         phase_layout.setContentsMargins(8, 12, 8, 8)
@@ -386,8 +365,6 @@ class MainWindow(QMainWindow):
 
         # ===== Peak Detection (NEW for 7825) =====
         peak_group = QGroupBox("Peak Detection")
-        # 设置标题字体：Arial 加粗
-        peak_group.setFont(QFont("Arial", 9, QFont.Bold))
         peak_layout = QGridLayout(peak_group)
         peak_layout.setSpacing(4)
         peak_layout.setContentsMargins(8, 12, 8, 8)
@@ -475,8 +452,6 @@ class MainWindow(QMainWindow):
 
         # ===== Display Control =====
         display_group = QGroupBox("Display Control")
-        # 设置标题字体：Arial 加粗
-        display_group.setFont(QFont("Arial", 9, QFont.Bold))
         display_layout = QGridLayout(display_group)
         display_layout.setSpacing(4)
         display_layout.setContentsMargins(8, 12, 8, 8)
@@ -527,8 +502,6 @@ class MainWindow(QMainWindow):
 
         # ===== Data Save =====
         save_group = QGroupBox("Data Save")
-        # 设置标题字体：Arial 加粗
-        save_group.setFont(QFont("Arial", 9, QFont.Bold))
         save_layout = QGridLayout(save_group)
         save_layout.setSpacing(4)
         save_layout.setContentsMargins(8, 12, 8, 8)
