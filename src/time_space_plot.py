@@ -619,16 +619,17 @@ class TimeSpacePlotWidget(QWidget):
 
             # 确保时间维度至少有2个点用于显示
             if windowed_data.shape[0] < 2:
-                log.debug(f"Insufficient time samples ({windowed_data.shape[0]}), skipping display")
+                log.debug(f"Insufficient time frames ({windowed_data.shape[0]}), skipping display")
                 return
 
-            # 调整时间下采样以确保有足够的时间点
+            # 调整时间下采样以确保有足够的时间点显示
+            # 避免过度下采样导致时间维度退化为单点
             actual_time_step = min(time_step, windowed_data.shape[0] // 2)
 
             # Downsample
             downsampled_data = windowed_data[::actual_time_step, ::space_step]
 
-            # 确保下采样后仍有足够的时间点
+            # 确保下采样后仍有足够的时间点（至少2帧用于2D显示）
             if downsampled_data.shape[0] < 2:
                 downsampled_data = windowed_data[:2, ::space_step]  # 至少取前两帧
 
