@@ -113,14 +113,28 @@ def _adjust_polling_interval(self, points_in_buffer: int, expected_points: int):
 
 ### 3.1 读取流程差异
 
-#### 数据量计算
+#### 数据量计算详解
 ```python
-# acquisition_thread.py:206-210
-def _read_phase_data(self):
-    """Read phase data using fbg_num semantics."""
-    fbg_points_per_ch = self._fbg_num_per_ch * self._frame_num
+# acquisition_thread.py:220
+fbg_points_per_ch = self._fbg_num_per_ch * self._frame_num
+```
 
-    phase_data, points_returned = self.api.read_phase_data(fbg_points_per_ch, self._channel_num)
+**Phase数据量计算实例**：
+- `fbg_num_per_ch`：通过峰值检测确定的FBG数量（如223个）
+- `frame_num`：读取帧数（如1024帧）
+- **总数据点数** = 223 × 1024 = **228,352 点/通道**
+
+**重要理解**：
+- **228,352** 不是采样点数，而是 `FBG数量 × 帧数`
+- 前面板显示的"Points"值（如9728）是每次扫描的采样点数
+- Phase数据读取基于FBG数量，与采样点数无直接关系
+- 这228,352个数据点代表223个FBG在1024帧时间内的相位值
+
+**数据结构说明**：
+```
+phase_data.shape = (1, 228352)  # 单通道
+# 重塑后用于时空显示：
+time_space_data.shape = (1024, 1, 223)  # 1024帧 × 1通道 × 223个FBG
 ```
 
 #### 关键参数差异
@@ -129,10 +143,15 @@ def _read_phase_data(self):
 - **数据类型**：`np.int32`（32位有符号整数）
 
 #### 数据量对比
-| 模式 | 计算基础 | 典型值 | 单通道数据量 |
-|------|----------|--------|-------------|
-| Raw | `point_num × frame_num` | 20480 × 1024 | ~40MB |
-| Phase | `fbg_num × frame_num` | 100 × 1024 | ~400KB |
+| 模式 | 计算基础 | 典型值示例 | 计算公式 | 单通道数据量 |
+|------|----------|------------|----------|-------------|
+| Raw | `point_num × frame_num` | 9728 × 1024 | 约10M点 | ~20MB |
+| Phase | `fbg_num × frame_num` | 223 × 1024 | 228K点 | ~900KB |
+
+**Phase数据特殊说明**：
+- 虽然只有223个有效FBG点，但API返回228,352个数据点
+- 这包含了完整的phase数据阵列，FBG分布其中
+- 实际显示时会根据FBG位置提取有效数据
 
 ### 3.2 额外的Monitor数据
 ```python
@@ -226,12 +245,65 @@ self._total_point_num = params.basic.point_num_per_scan  # 采样点数
 3. **多线程处理**：FFT计算移至独立线程
 4. **压缩传输**：对大数据块进行压缩
 
-## 8. 总结
+## 8. Time-Space数据流分析
+
+### 8.1 Phase数据的时空转换
+
+#### 数据维度变化过程
+```python
+# 原始接收：(1, 228352)
+# -> 缓冲区累积：(window_frames, 1, 228352)
+# -> FBG范围提取：(window_frames, 1, 60)  # [40:100]范围
+# -> 最终显示：(60, window_frames)  # 转置后
+```
+
+#### 窗口机制解析
+```python
+# time_space_plot.py:63-64
+self._max_window_frames = 100    # 最大缓冲帧数
+self._window_frames = 5          # 显示窗口帧数（用户可调整1-50）
+```
+
+**窗口机制作用**：
+- **缓冲区**：保存最近100帧数据，旧数据自动删除
+- **显示窗口**：从缓冲区取最近N帧用于时空显示
+- **用户可调**：通过界面"Window Frames"控制时间窗口大小
+- **内存优化**：避免无限制累积数据导致内存溢出
+
+#### 实际数据流示例
+根据日志 `original=(12, 1, 228352), display=(60, 12)`：
+```
+1. API读取：(1, 228352) = 1帧 × 228,352个数据点
+2. 缓冲累积：(12, 1, 228352) = 12帧时间窗口
+3. 空间提取：(12, 1, 60) = 选择FBG[40:100]共60个点
+4. 显示转置：(60, 12) = 60个FBG × 12个时间点
+```
+
+### 8.2 坐标系统
+
+#### 时间轴计算
+```python
+time_duration_s = window_frames / scan_rate
+# 示例：12帧 / 2000Hz = 0.006秒
+```
+
+#### 空间轴含义
+- **Y轴(垂直)**：FBG传感点位置索引
+- **X轴(水平)**：时间维度
+- **颜色**：相位变化幅度
+
+## 9. 总结
 
 Raw数据和Phase数据读取机制基本相同，主要差异在于：
-- **数据量大小**：Raw数据量是Phase数据的100倍左右
+- **数据量大小**：Raw数据量是Phase数据的20倍左右（实际测试）
 - **读取参数**：Raw基于采样点数，Phase基于FBG数量
 - **数据类型**：Raw为int16，Phase为int32
 - **更新频率**：Raw限制为1秒1次，Phase可达20FPS
 
-当前性能问题主要源于Raw数据量过大，可通过参数调整和算法优化来改善。
+**关键发现**：
+1. **228352 = 223个FBG × 1024帧**，不是采样点数
+2. **Time-Space窗口机制**：保留100帧缓冲，显示最近N帧
+3. **完整数据传输**：虽然只有223个有效FBG，但传输完整phase阵列
+4. **用户可控参数**：窗口帧数、时空范围、采样参数均可调整
+
+当前性能问题主要源于数据处理量和更新频率，可通过参数调整和算法优化来改善。
