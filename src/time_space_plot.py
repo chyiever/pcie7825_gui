@@ -559,7 +559,7 @@ class TimeSpacePlotWidget(QWidget):
         Update the plot with new phase data.
 
         Args:
-            data: Phase data array
+            data: Phase data array, shape=(1, 228352) = (1, fbg_num*frame_num)
             channel_num: Number of channels
 
         Returns:
@@ -571,23 +571,46 @@ class TimeSpacePlotWidget(QWidget):
                 log.debug("Plot disabled, skipping data update")
                 return False
 
+            # Get FBG parameters from main window
+            main_window = self.parent()
+            while main_window is not None and not hasattr(main_window, '_fbg_num_per_ch'):
+                main_window = main_window.parent()
+
+            if main_window is None or main_window._fbg_num_per_ch == 0:
+                log.warning("FBG number not available, skipping time-space plot update")
+                return False
+
+            fbg_num = main_window._fbg_num_per_ch
+            frame_num = main_window.params.display.frame_num
+
+            # Step 1: Reshape 1D data to 2D structure (fbg_num, frame_num)
             if data.ndim == 1:
                 data = data.reshape(1, -1)
 
-            log.debug(f"Received data shape: {data.shape}, channels: {channel_num}")
+            # Verify data size matches expectation
+            expected_size = fbg_num * frame_num
+            if data.shape[1] != expected_size:
+                log.warning(f"Data size mismatch: expected {expected_size}, got {data.shape[1]}")
+                return False
+
+            # Reshape to (frame_num, fbg_num) first, then transpose to (fbg_num, frame_num)
+            # Data layout: [f0_fbg0, f0_fbg1, ..., f0_fbgN, f1_fbg0, f1_fbg1, ...]
+            # Reshape to: [[f0_fbg0, f0_fbg1, ..., f0_fbgN], [f1_fbg0, f1_fbg1, ...], ...]
+            phase_2d = data.reshape(frame_num, fbg_num).T  # (fbg_num, frame_num)
+
+            log.debug(f"Reshaped data: {data.shape} -> {phase_2d.shape} (fbg_num={fbg_num}, frame_num={frame_num})")
 
             # Initialize or update data buffer
             if self._data_buffer is None:
                 self._data_buffer = deque(maxlen=self._max_window_frames)
 
-            # Add new frame to buffer
-            self._data_buffer.append(data)
+            # Step 4: Add new frame to buffer (will be concatenated horizontally later)
+            self._data_buffer.append(phase_2d)
             self._current_frame_count = len(self._data_buffer)
 
-            # Create time-space data from buffer
+            # Create time-space data from buffer when enough frames available
             if len(self._data_buffer) >= self._window_frames:
-                time_space_data = np.array(list(self._data_buffer)[-self._window_frames:])
-                self._update_display(time_space_data)
+                self._update_display()
 
             return True
 
@@ -595,75 +618,83 @@ class TimeSpacePlotWidget(QWidget):
             log.error(f"Error updating time-space data: {e}")
             return False
 
-    def _update_display(self, time_space_data: np.ndarray):
+    def _update_display(self):
         """Update the display with processed time-space data."""
         try:
-            # Apply spatial range selection
+            # Step 4: Concatenate recent frames horizontally
+            recent_frames = list(self._data_buffer)[-self._window_frames:]
+            concatenated_data = np.hstack(recent_frames)  # (fbg_num, total_time_points)
+
+            log.debug(f"Concatenated {len(recent_frames)} frames: {concatenated_data.shape}")
+
+            # Step 2: Apply spatial range selection
             start_idx = max(0, self._distance_start)
-            end_idx = min(time_space_data.shape[-1], self._distance_end)
+            end_idx = min(concatenated_data.shape[0], self._distance_end)
 
             if start_idx >= end_idx:
                 log.warning(f"Invalid FBG range: {start_idx} >= {end_idx}")
                 return
 
-            # Extract FBG range for all frames
-            windowed_data = time_space_data[:, :, start_idx:end_idx] if time_space_data.ndim == 3 else time_space_data[:, start_idx:end_idx]
+            # Extract FBG range (spatial dimension)
+            spatial_windowed = concatenated_data[start_idx:end_idx, :]  # (selected_fbg, total_time)
 
-            # Apply downsampling
-            time_step = max(1, self._time_downsample)
+            # Step 3: Apply downsampling
             space_step = max(1, self._space_downsample)
+            time_step = max(1, self._time_downsample)
 
-            if windowed_data.ndim == 3:
-                # Multi-channel data: select first channel
-                windowed_data = windowed_data[:, 0, :]
+            # Downsample both dimensions
+            downsampled_data = spatial_windowed[::space_step, ::time_step]
 
-            # 确保时间维度至少有2个点用于显示
-            if windowed_data.shape[0] < 2:
-                log.debug(f"Insufficient time frames ({windowed_data.shape[0]}), skipping display")
+            # Ensure minimum size for display
+            if downsampled_data.shape[0] < 1 or downsampled_data.shape[1] < 2:
+                log.warning(f"Insufficient data for display: {downsampled_data.shape}")
                 return
 
-            # 调整时间下采样以确保有足够的时间点显示
-            # 避免过度下采样导致时间维度退化为单点
-            actual_time_step = min(time_step, windowed_data.shape[0] // 2)
-
-            # Downsample
-            downsampled_data = windowed_data[::actual_time_step, ::space_step]
-
-            # 确保下采样后仍有足够的时间点（至少2帧用于2D显示）
-            if downsampled_data.shape[0] < 2:
-                downsampled_data = windowed_data[:2, ::space_step]  # 至少取前两帧
-
-            # Transpose for correct display orientation (time=X, space=Y)
-            display_data = downsampled_data.T
-
-            # Set image data
-            self.image_item.setImage(display_data, levels=(self._vmin, self._vmax))
+            # Set image data (space=Y, time=X)
+            self.image_item.setImage(downsampled_data, levels=(self._vmin, self._vmax))
 
             # Update axis scaling
-            self._update_axis_labels(time_space_data.shape)
+            self._update_axis_labels(concatenated_data.shape)
 
-            log.debug(f"Updated display: original={time_space_data.shape}, display={display_data.shape}")
+            log.debug(f"Updated display: concatenated={concatenated_data.shape}, "
+                     f"spatial_range=[{start_idx}:{end_idx}], "
+                     f"final_display={downsampled_data.shape}")
 
         except Exception as e:
             log.error(f"Error updating display: {e}")
 
-    def _update_axis_labels(self, data_shape: tuple):
-        """Update axis labels and scales based on data dimensions."""
+    def _update_axis_labels(self, concatenated_shape: tuple):
+        """Update axis labels and scales based on concatenated data dimensions."""
         try:
-            # Calculate coordinate ranges
-            time_points, spatial_points = data_shape[0], data_shape[-1]
-            time_duration_s = time_points / self._scan_rate
+            # Get parameters
+            main_window = self.parent()
+            while main_window is not None and not hasattr(main_window, '_fbg_num_per_ch'):
+                main_window = main_window.parent()
 
-            # Apply FBG range
-            distance_start_actual = self._distance_start
-            distance_end_actual = min(spatial_points, self._distance_end)
+            if main_window is None:
+                return
+
+            fbg_num = main_window._fbg_num_per_ch
+            frame_num = main_window.params.display.frame_num
+
+            # Calculate coordinate ranges
+            total_time_points = concatenated_shape[1]  # Total time points after concatenation
+            time_duration_s = (total_time_points / frame_num) * (frame_num / self._scan_rate)
+
+            # Apply FBG range (space axis)
+            space_start_actual = max(0, self._distance_start)
+            space_end_actual = min(fbg_num, self._distance_end)
 
             # Set image coordinate mapping
-            rect = QtCore.QRectF(0, distance_start_actual, time_duration_s,
-                               distance_end_actual - distance_start_actual)
+            # X-axis: time (0 to time_duration_s)
+            # Y-axis: space/FBG index (space_start_actual to space_end_actual)
+            rect = QtCore.QRectF(0, space_start_actual, time_duration_s,
+                               space_end_actual - space_start_actual)
             self.image_item.setRect(rect)
 
-            log.debug(f"Set image coordinates: Time=[0,{time_duration_s:.3f}]s, FBG=[{distance_start_actual},{distance_end_actual}]")
+            log.debug(f"Set image coordinates: Time=[0,{time_duration_s:.6f}]s, "
+                     f"FBG=[{space_start_actual},{space_end_actual}], "
+                     f"concatenated_shape={concatenated_shape}")
 
         except Exception as e:
             log.warning(f"Error updating axis labels: {e}")
