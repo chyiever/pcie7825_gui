@@ -301,11 +301,13 @@ class AcquisitionThread(QThread):
         self._pause_condition.wakeAll()
         self._mutex.unlock()
 
+        # Force terminate if thread doesn't stop gracefully
         if self.isRunning():
-            if not self.wait(3000):
-                log.warning("Thread did not finish in 3 seconds! Terminating...")
+            log.warning("Forcing thread termination...")
+            if not self.wait(1000):  # 减少等待时间从3秒到1秒
+                log.warning("Thread did not finish in 1 second! Force terminating...")
                 self.terminate()
-                self.wait(1000)
+                self.wait(500)  # 给terminate一些时间
 
     def pause(self):
         self._mutex.lock()

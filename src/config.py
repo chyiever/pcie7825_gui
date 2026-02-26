@@ -72,7 +72,7 @@ class PhaseDemodParams:
 @dataclass
 class PeakDetectionParams:
     """FBG peak detection parameters (NEW for 7825)."""
-    amp_base_line: int = 2000
+    amp_base_line: int = 3000
     fbg_interval_m: float = 5.0
 
 
@@ -241,8 +241,8 @@ MONITOR_UPDATE_INTERVALS = {
 
 RAW_DATA_CONFIG = {
     'gui_frame_limit': 1,               # 仅传输前1帧给GUI (保持)
-    'time_domain_update_s': 1.5,        # 时域图更新间隔(秒) (1.0→1.5，减少负担)
+    'time_domain_update_s': 2,        # 时域图更新间隔(秒) (1.0→1.5，减少负担)
     'fft_update_s': 5.0,               # FFT更新间隔(秒) (3.0→5.0，减少计算)
     'frame_averaging': False,           # 禁用4帧平均 (保持)
-    'max_gui_update_fps': 0.66,        # GUI最大更新频率(FPS) (1.0→0.66)
+    'max_gui_update_fps':1,        # GUI最大更新频率(FPS) (1.0→0.66)
 }

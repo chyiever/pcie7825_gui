@@ -484,7 +484,7 @@ class MainWindow(QMainWindow):
         display_layout.addWidget(QLabel("Frames:"), 1, 0)
         self.frame_num_spin = QSpinBox()
         self.frame_num_spin.setRange(1, 10000)
-        self.frame_num_spin.setValue(1024)
+        self.frame_num_spin.setValue(10)  # 从1024改为10，大幅减少数据量
         self.frame_num_spin.setMinimumHeight(INPUT_MIN_HEIGHT)
         self.frame_num_spin.setMaximumWidth(INPUT_MAX_WIDTH)
         display_layout.addWidget(self.frame_num_spin, 1, 1)
@@ -1229,19 +1229,35 @@ class MainWindow(QMainWindow):
         self.stop_btn.setEnabled(False)
         self.stop_btn.setText("Stopping...")
 
-        if self.acq_thread is not None:
-            self.acq_thread.stop()
+        # 使用QTimer实现超时强制停止
+        def force_stop_ui():
+            log.warning("Force stopping - timeout reached")
+            self._set_start_btn_ready()
+            self._set_stop_btn_disabled()
+            self._set_params_enabled(True)
+            self.stop_btn.setText("STOP")
 
-        # 停止FFT工作线程
-        if self.fft_worker is not None:
-            self.fft_worker.stop()
+        # 2秒后强制恢复UI（防止卡死）
+        QTimer.singleShot(2000, force_stop_ui)
 
+        # 1. 首先停止硬件采集 - 这会中断阻塞的read_data调用
         if not self.simulation_mode and self.api is not None:
             try:
+                log.info("Stopping hardware acquisition...")
                 self.api.stop()
             except Exception as e:
                 log.warning(f"Error stopping device: {e}")
 
+        # 2. 然后停止采集线程
+        if self.acq_thread is not None:
+            log.info("Stopping acquisition thread...")
+            self.acq_thread.stop()
+
+        # 3. 停止FFT工作线程
+        if self.fft_worker is not None:
+            self.fft_worker.stop()
+
+        # 4. 停止数据保存
         if self.data_saver is not None:
             try:
                 self.data_saver.stop()
