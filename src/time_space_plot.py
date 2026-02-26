@@ -344,66 +344,34 @@ class TimeSpacePlotWidget(QWidget):
         log.info("Successfully created PlotWidget+ImageItem with histogram widget")
 
     def _set_histogram_white_background(self):
-        """Set histogram widget background to white - called after initialization"""
+        """Set histogram widget background to white - 参考example_reference完整实现"""
         try:
             # Set font first
             if hasattr(self.histogram_widget, 'gradient'):
                 self.histogram_widget.gradient.setTickFont(QFont("Times New Roman", 7))
 
-            # 使用更强化的白色背景设置方法
-            # 设置主容器样式
-            self.histogram_widget.setStyleSheet("""
-                QWidget {
-                    background-color: white;
-                    color: black;
-                }
-                QGraphicsView {
-                    background-color: white;
-                    border: none;
-                }
-                HistogramLUTWidget {
-                    background-color: white;
-                }
-                GraphicsView {
-                    background-color: white;
-                }
-            """)
-
-            # Set all possible background components to white
-            components_to_set = []
-
-            # Main histogram ViewBox
-            if hasattr(self.histogram_widget, 'vb'):
-                components_to_set.append(('histogram.vb', self.histogram_widget.vb))
-
-            # Gradient ViewBox
-            if hasattr(self.histogram_widget, 'gradient') and hasattr(self.histogram_widget.gradient, 'vb'):
-                components_to_set.append(('gradient.vb', self.histogram_widget.gradient.vb))
-
-            # Histogram plot ViewBox
-            if hasattr(self.histogram_widget, 'plot') and hasattr(self.histogram_widget.plot, 'vb'):
-                components_to_set.append(('plot.vb', self.histogram_widget.plot.vb))
-
-            # Set background for all components
-            for name, component in components_to_set:
-                try:
-                    if hasattr(component, 'setBackgroundColor'):
-                        component.setBackgroundColor('w')
-                        log.debug(f"Set white background for {name}")
-                except Exception as e:
-                    log.debug(f"Could not set background for {name}: {e}")
-
-            # Set main widget background
+            # 参考example_reference的完整白色背景设置
+            # 1. 直接设置背景颜色
             if hasattr(self.histogram_widget, 'setBackground'):
                 self.histogram_widget.setBackground('w')
 
-            # 设置渐变编辑器背景
+            # 2. 使用StyleSheet设置背景
+            self.histogram_widget.setStyleSheet("background-color: white;")
+
+            # 3. 设置PlotItem背景
+            plot_item = self.histogram_widget.plotItem
+            if plot_item and hasattr(plot_item, 'getViewBox'):
+                view_box = plot_item.getViewBox()
+                if view_box and hasattr(view_box, 'setBackgroundColor'):
+                    view_box.setBackgroundColor('w')
+
+            # 4. 设置gradient编辑器背景
             if hasattr(self.histogram_widget, 'gradient'):
                 gradient = self.histogram_widget.gradient
                 if gradient:
-                    gradient.setStyleSheet("background-color: white; color: black;")
+                    gradient.setStyleSheet("background-color: white;")
 
-            log.debug("Applied comprehensive white background to histogram widget")
+            log.debug("Applied comprehensive white background to histogram widget (example_reference style)")
 
         except Exception as e:
             log.debug(f"Error in _set_histogram_white_background: {e}")
@@ -411,29 +379,78 @@ class TimeSpacePlotWidget(QWidget):
     def _apply_colormap(self):
         """Apply the selected colormap to the image item and histogram widget."""
         try:
-            # Try to get the colormap - handle different PyQtGraph versions
-            try:
-                # 使用正确的colormap映射
-                colormap = pg.colormap.get(self._colormap)
-                log.debug(f"Successfully loaded colormap: {self._colormap}")
-            except Exception as e:
-                log.debug(f"Could not get colormap {self._colormap}: {e}")
-                # Create fallback colormaps
-                if self._colormap == "jet":
-                    colormap = pg.ColorMap([0, 0.25, 0.5, 0.75, 1],
-                                         [[0, 0, 128, 255], [0, 0, 255, 255], [0, 255, 255, 255],
-                                          [255, 255, 0, 255], [255, 0, 0, 255]])
-                elif self._colormap == "viridis":
-                    colormap = pg.ColorMap([0, 0.25, 0.5, 0.75, 1],
-                                         [[68, 1, 84, 255], [71, 44, 122, 255], [59, 81, 139, 255],
-                                          [44, 123, 142, 255], [33, 144, 141, 255]])
-                elif self._colormap == "gray":
-                    colormap = pg.ColorMap([0, 1], [[0, 0, 0, 255], [255, 255, 255, 255]])
-                else:
-                    # Default jet-like colormap
-                    colormap = pg.ColorMap([0, 0.25, 0.5, 0.75, 1],
-                                         [[0, 0, 128, 255], [0, 0, 255, 255], [0, 255, 255, 255],
-                                          [255, 255, 0, 255], [255, 0, 0, 255]])
+            # Create custom colormaps to ensure distinct color schemes
+            # 参考example_reference的实现，创建明显不同的色彩映射
+            if self._colormap == "jet":
+                colors = [
+                    (0.0, (0, 0, 128)),      # dark blue
+                    (0.25, (0, 0, 255)),     # blue
+                    (0.5, (0, 255, 255)),    # cyan
+                    (0.75, (255, 255, 0)),   # yellow
+                    (1.0, (255, 0, 0))       # red
+                ]
+            elif self._colormap == "hsv":
+                colors = [
+                    (0.0, (255, 0, 0)),      # red
+                    (0.17, (255, 128, 0)),   # orange
+                    (0.33, (255, 255, 0)),   # yellow
+                    (0.5, (0, 255, 0)),      # green
+                    (0.67, (0, 255, 255)),   # cyan
+                    (0.83, (0, 0, 255)),     # blue
+                    (1.0, (255, 0, 255))     # magenta
+                ]
+            elif self._colormap == "viridis":
+                colors = [
+                    (0.0, (68, 1, 84)),      # dark purple
+                    (0.25, (59, 82, 139)),   # purple-blue
+                    (0.5, (33, 144, 140)),   # teal
+                    (0.75, (93, 201, 99)),   # green
+                    (1.0, (253, 231, 37))    # yellow
+                ]
+            elif self._colormap == "plasma":
+                colors = [
+                    (0.0, (13, 8, 135)),     # dark blue
+                    (0.25, (126, 3, 168)),   # purple
+                    (0.5, (203, 70, 121)),   # pink
+                    (0.75, (248, 149, 64)),  # orange
+                    (1.0, (240, 249, 33))    # yellow
+                ]
+            elif self._colormap == "seismic":
+                colors = [
+                    (0.0, (0, 0, 139)),      # 深蓝色 (负值)
+                    (0.25, (0, 100, 255)),   # 蓝色
+                    (0.5, (255, 255, 255)),  # 白色 (零值)
+                    (0.75, (255, 100, 100)), # 粉红色
+                    (1.0, (139, 0, 0))       # 深红色 (正值)
+                ]
+            elif self._colormap == "gray":
+                colors = [
+                    (0.0, (0, 0, 0)),        # black
+                    (1.0, (255, 255, 255))   # white
+                ]
+            elif self._colormap == "hot":
+                colors = [
+                    (0.0, (0, 0, 0)),        # black
+                    (0.33, (255, 0, 0)),     # red
+                    (0.66, (255, 255, 0)),   # yellow
+                    (1.0, (255, 255, 255))   # white
+                ]
+            elif self._colormap == "cool":
+                colors = [
+                    (0.0, (0, 255, 255)),    # cyan
+                    (1.0, (255, 0, 255))     # magenta
+                ]
+            else:
+                # Default to jet
+                colors = [
+                    (0.0, (0, 0, 128)), (0.25, (0, 0, 255)), (0.5, (0, 255, 255)),
+                    (0.75, (255, 255, 0)), (1.0, (255, 0, 0))
+                ]
+
+            # Create colormap from color definitions
+            colormap = pg.ColorMap(pos=[c[0] for c in colors],
+                                 color=[c[1] for c in colors])
+            log.debug(f"Created custom colormap: {self._colormap}")
 
             # Apply colormap to histogram widget if available
             if hasattr(self, 'histogram_widget') and self.histogram_widget:
