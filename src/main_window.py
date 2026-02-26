@@ -211,35 +211,35 @@ class MainWindow(QMainWindow):
         panel.setStyleSheet("""
             QGroupBox {
                 font-family: 'Arial';
-                font-size: 10px;
+                font-size: 12px;
                 font-weight: bold;
             }
             QLabel {
                 font-family: 'Times New Roman';
-                font-size: 10px;
+                font-size: 12px;
             }
             QSpinBox, QDoubleSpinBox, QComboBox, QLineEdit {
                 font-family: 'Times New Roman';
-                font-size: 10px;
-                max-height: 22px;
+                font-size: 12px;
+                max-height: 20px;
             }
             QComboBox {
                 max-width: 100px;
             }
             QRadioButton, QCheckBox {
                 font-family: 'Times New Roman';
-                font-size: 10px;
+                font-size: 12px;
             }
             QPushButton {
                 font-family: 'Times New Roman';
-                font-size: 10px;
+                font-size: 12px;
             }
         """)
 
         # ===== Basic Parameters =====
         basic_group = QGroupBox("Basic Parameters")
         basic_layout = QGridLayout(basic_group)
-        basic_layout.setSpacing(4)
+        basic_layout.setSpacing(2)
         basic_layout.setContentsMargins(8, 12, 8, 8)
 
         # Row 0: Clock | Trigger
@@ -321,7 +321,7 @@ class MainWindow(QMainWindow):
         # ===== Upload Parameters =====
         upload_group = QGroupBox("Upload Parameters")
         upload_layout = QGridLayout(upload_group)
-        upload_layout.setSpacing(4)
+        upload_layout.setSpacing(2)
         upload_layout.setContentsMargins(8, 12, 8, 8)
 
         upload_layout.addWidget(QLabel("Source:"), 0, 0)
@@ -366,7 +366,7 @@ class MainWindow(QMainWindow):
         # ===== Peak Detection (NEW for 7825) =====
         peak_group = QGroupBox("Peak Detection")
         peak_layout = QGridLayout(peak_group)
-        peak_layout.setSpacing(4)
+        peak_layout.setSpacing(2)
         peak_layout.setContentsMargins(8, 12, 8, 8)
         # Set smaller horizontal spacing between peak status labels
         peak_layout.setHorizontalSpacing(2)
@@ -453,7 +453,7 @@ class MainWindow(QMainWindow):
         # ===== Display Control =====
         display_group = QGroupBox("Display Control")
         display_layout = QGridLayout(display_group)
-        display_layout.setSpacing(4)
+        display_layout.setSpacing(2)
         display_layout.setContentsMargins(8, 12, 8, 8)
 
         display_layout.addWidget(QLabel("Mode:"), 0, 0)
