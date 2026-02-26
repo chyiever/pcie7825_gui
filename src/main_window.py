@@ -292,14 +292,15 @@ class MainWindow(QMainWindow):
         self.bypass_spin.setMaximumWidth(INPUT_MAX_WIDTH)
         basic_layout.addWidget(self.bypass_spin, 2, 3)
 
-        # Row 3: Center Freq
-        basic_layout.addWidget(QLabel("CenterFreq:"), 3, 0, 1, 2)
+        # Row 3: Center Freq (aligned with Points input above)
+        basic_layout.addWidget(QLabel("CenterFreq:"), 3, 0)
         self.center_freq_combo = QComboBox()
         for label, value in CENTER_FREQ_OPTIONS:
             self.center_freq_combo.addItem(label, value)
         self.center_freq_combo.setCurrentIndex(1)  # Default 200MHz
         self.center_freq_combo.setMinimumHeight(INPUT_MIN_HEIGHT)
-        basic_layout.addWidget(self.center_freq_combo, 3, 2, 1, 2)
+        self.center_freq_combo.setMaximumWidth(INPUT_MAX_WIDTH)  # Same width as Points input
+        basic_layout.addWidget(self.center_freq_combo, 3, 1)
 
         layout.addWidget(basic_group)
 
@@ -315,6 +316,7 @@ class MainWindow(QMainWindow):
             self.data_source_combo.addItem(label, value)
         self.data_source_combo.setCurrentIndex(2)  # Default Phase
         self.data_source_combo.setMinimumHeight(INPUT_MIN_HEIGHT)
+        self.data_source_combo.setMaximumWidth(INPUT_MAX_WIDTH)  # Align with other inputs
         upload_layout.addWidget(self.data_source_combo, 0, 1)
 
         upload_layout.addWidget(QLabel("Channels:"), 0, 2)
@@ -322,6 +324,7 @@ class MainWindow(QMainWindow):
         for label, value in CHANNEL_NUM_OPTIONS:
             self.channel_combo.addItem(label, value)
         self.channel_combo.setMinimumHeight(INPUT_MIN_HEIGHT)
+        self.channel_combo.setMaximumWidth(INPUT_MAX_WIDTH)  # Align with other inputs
         upload_layout.addWidget(self.channel_combo, 0, 3)
 
         layout.addWidget(upload_group)
@@ -351,6 +354,8 @@ class MainWindow(QMainWindow):
         peak_layout = QGridLayout(peak_group)
         peak_layout.setSpacing(4)
         peak_layout.setContentsMargins(8, 12, 8, 8)
+        # Set smaller horizontal spacing between peak status labels
+        peak_layout.setHorizontalSpacing(2)
 
         peak_layout.addWidget(QLabel("AmpBase:"), 0, 0)
         self.amp_base_spin = QSpinBox()
@@ -369,9 +374,10 @@ class MainWindow(QMainWindow):
         self.fbg_interval_spin.setMaximumWidth(INPUT_MAX_WIDTH)
         peak_layout.addWidget(self.fbg_interval_spin, 0, 3)
 
-        # Get Peak Info button
+        # Get Peak Info button (reduced height, same width)
         self.get_peak_btn = QPushButton("Get Peak Info")
-        self.get_peak_btn.setMinimumHeight(28)
+        self.get_peak_btn.setMinimumHeight(22)  # Reduced from 28 to 22
+        self.get_peak_btn.setMaximumHeight(22)
         self.get_peak_btn.setStyleSheet("""
             QPushButton {
                 background-color: #2196F3;
@@ -388,21 +394,45 @@ class MainWindow(QMainWindow):
         self.save_peak_check = QCheckBox("Save Peak Info")
         peak_layout.addWidget(self.save_peak_check, 1, 2, 1, 2)
 
-        # Peak count labels
-        peak_layout.addWidget(QLabel("CH0 Peaks:"), 2, 0)
+        # Peak count labels (improved compact layout)
+        # Create a horizontal layout for compact peak status display
+        peak_status_layout = QHBoxLayout()
+        peak_status_layout.setSpacing(8)  # Reduced spacing between groups
+
+        # CH0 Peaks group
+        ch0_label = QLabel("CH0 Peaks:")
+        ch0_label.setContentsMargins(0, 0, 2, 0)  # Minimal margin
         self.ch0_peak_label = QLabel("0")
         self.ch0_peak_label.setStyleSheet("font-weight: bold; color: #1f77b4;")
-        peak_layout.addWidget(self.ch0_peak_label, 2, 1)
+        self.ch0_peak_label.setContentsMargins(0, 0, 0, 0)
 
-        peak_layout.addWidget(QLabel("CH1 Peaks:"), 2, 2)
+        # CH1 Peaks group
+        ch1_label = QLabel("CH1 Peaks:")
+        ch1_label.setContentsMargins(0, 0, 2, 0)  # Minimal margin
         self.ch1_peak_label = QLabel("0")
         self.ch1_peak_label.setStyleSheet("font-weight: bold; color: #ff7f0e;")
-        peak_layout.addWidget(self.ch1_peak_label, 2, 3)
+        self.ch1_peak_label.setContentsMargins(0, 0, 0, 0)
 
-        peak_layout.addWidget(QLabel("Valid FBG:"), 3, 0)
+        # Valid FBG group
+        valid_label = QLabel("Valid FBG:")
+        valid_label.setContentsMargins(0, 0, 2, 0)  # Minimal margin
         self.valid_fbg_label = QLabel("0")
         self.valid_fbg_label.setStyleSheet("font-weight: bold; color: #2ca02c;")
-        peak_layout.addWidget(self.valid_fbg_label, 3, 1)
+        self.valid_fbg_label.setContentsMargins(0, 0, 0, 0)
+
+        # Add to horizontal layout
+        peak_status_layout.addWidget(ch0_label)
+        peak_status_layout.addWidget(self.ch0_peak_label)
+        peak_status_layout.addSpacing(10)  # Small gap between groups
+        peak_status_layout.addWidget(ch1_label)
+        peak_status_layout.addWidget(self.ch1_peak_label)
+        peak_status_layout.addSpacing(10)  # Small gap between groups
+        peak_status_layout.addWidget(valid_label)
+        peak_status_layout.addWidget(self.valid_fbg_label)
+        peak_status_layout.addStretch()  # Push everything to the left
+
+        # Add the horizontal layout to the grid
+        peak_layout.addLayout(peak_status_layout, 2, 0, 1, 6)  # Span across all columns
 
         layout.addWidget(peak_group)
 
@@ -498,11 +528,15 @@ class MainWindow(QMainWindow):
         control_layout = QHBoxLayout()
 
         self.start_btn = QPushButton("START")
-        self.start_btn.setMinimumHeight(38)
+        self.start_btn.setMinimumHeight(28)  # Reduced from 38 to 28
+        self.start_btn.setMaximumHeight(28)
+        # self.start_btn.setMaximumWidth(80)   # Set maximum width
         self._set_start_btn_ready()
 
         self.stop_btn = QPushButton("STOP")
-        self.stop_btn.setMinimumHeight(38)
+        self.stop_btn.setMinimumHeight(28)   # Reduced from 38 to 28
+        self.stop_btn.setMaximumHeight(28)
+        # self.stop_btn.setMaximumWidth(80)    # Set maximum width
         self._set_stop_btn_disabled()
 
         control_layout.addWidget(self.start_btn)
