@@ -251,7 +251,6 @@ RAW_DATA_CONFIG = {
 RAW_SAMPLING_CONFIG = {
     'time_domain_interval_s': 1.0,     # 时域图采样间隔：每1秒采样一次
     'time_domain_frames': 4,           # 时域图帧数：读取4帧做平均
-    'fft_interval_s': 5.0,             # FFT采样间隔：每5秒采样一次
+    'fft_interval_s': 5.0,             # FFT采样间隔：每5秒采样一次（仅当spectrum启用时）
     'fft_frames': 1,                   # FFT帧数：读取1帧计算FFT
-    'enable_on_demand': True,          # 启用按需采样模式（仅RAW数据源）
 }

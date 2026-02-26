@@ -69,7 +69,6 @@ class AcquisitionThread(QThread):
         # RAW数据按需采样状态
         self._last_time_domain_sample = 0
         self._last_fft_sample = 0
-        self._raw_sampling_enabled = RAW_SAMPLING_CONFIG['enable_on_demand']
 
         log.info("AcquisitionThread initialized")
 
@@ -131,12 +130,8 @@ class AcquisitionThread(QThread):
                     # Phase模式：连续采集
                     self._continuous_acquisition_step(expected_points)
                 else:
-                    # Raw/Amplitude模式：检查是否使用按需采样
-                    if self._raw_sampling_enabled:
-                        self._on_demand_sampling_step()
-                    else:
-                        expected_points = self._total_point_num * self._frame_num
-                        self._continuous_acquisition_step(expected_points)
+                    # Raw/Amplitude模式：仅使用按需采样
+                    self._on_demand_sampling_step()
 
                 loop_time = (time.perf_counter() - loop_start) * 1000
                 if loop_time > 100:
@@ -219,9 +214,11 @@ class AcquisitionThread(QThread):
         time_domain_interval = RAW_SAMPLING_CONFIG['time_domain_interval_s']
         need_time_domain = (current_time - self._last_time_domain_sample) >= time_domain_interval
 
-        # 检查是否需要FFT采样
+        # 检查是否需要FFT采样（仅在启用spectrum时）
         fft_interval = RAW_SAMPLING_CONFIG['fft_interval_s']
-        need_fft = (current_time - self._last_fft_sample) >= fft_interval
+        spectrum_enabled = self._params and self._params.display.spectrum_enable
+        need_fft = (spectrum_enabled and
+                   (current_time - self._last_fft_sample) >= fft_interval)
 
         # 如果都不需要，短暂休眠后继续
         if not need_time_domain and not need_fft:
