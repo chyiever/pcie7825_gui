@@ -77,6 +77,34 @@ class PeakDetectionParams:
 
 
 @dataclass
+class TimeSpaceParams:
+    """
+    Time-Space plot configuration parameters.
+
+    Controls the 2D time-space plot visualization including rolling window
+    behavior, spatial range selection, downsampling, and colormap settings.
+
+    Attributes:
+        window_frames: Number of frames to keep in rolling window (temporal dimension)
+        distance_range_start: Starting FBG index for display (adapted for WFBG-7825)
+        distance_range_end: Ending FBG index for display (adapted for WFBG-7825)
+        time_downsample: Time dimension downsampling factor (1=no downsampling)
+        space_downsample: Space dimension downsampling factor (1=no downsampling)
+        colormap_type: Colormap type for 2D visualization
+        vmin: Minimum value for color mapping
+        vmax: Maximum value for color mapping
+    """
+    window_frames: int = 5              # Rolling window size in frames
+    distance_range_start: int = 40      # Start index for FBG range
+    distance_range_end: int = 100       # End index for FBG range
+    time_downsample: int = 50           # Time downsampling factor
+    space_downsample: int = 2           # Space downsampling factor
+    colormap_type: str = "jet"          # PyQtGraph colormap name
+    vmin: float = -0.02                 # Color range minimum (for phase data)
+    vmax: float = 0.02                  # Color range maximum (for phase data)
+
+
+@dataclass
 class DisplayParams:
     """Real-time display configuration."""
     mode: int = DisplayMode.TIME
@@ -84,7 +112,7 @@ class DisplayParams:
     frame_num: int = 1024
     spectrum_enable: bool = True
     psd_enable: bool = False
-    # No rad_enable - 7825 phase is already calibrated
+    rad_enable: bool = False    # Convert phase data to radians for display (storage unaffected)
 
 
 @dataclass
@@ -103,6 +131,7 @@ class AllParams:
     upload: UploadParams = field(default_factory=UploadParams)
     phase_demod: PhaseDemodParams = field(default_factory=PhaseDemodParams)
     peak_detection: PeakDetectionParams = field(default_factory=PeakDetectionParams)
+    time_space: TimeSpaceParams = field(default_factory=TimeSpaceParams)
     display: DisplayParams = field(default_factory=DisplayParams)
     save: SaveParams = field(default_factory=SaveParams)
 

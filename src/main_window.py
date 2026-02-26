@@ -22,7 +22,7 @@ from PyQt5.QtWidgets import (
     QGroupBox, QLabel, QLineEdit, QComboBox, QPushButton, QCheckBox,
     QRadioButton, QButtonGroup, QSpinBox, QDoubleSpinBox, QFileDialog,
     QMessageBox, QStatusBar, QSplitter, QFrame, QSizePolicy, QProgressBar,
-    QScrollArea
+    QScrollArea, QTabWidget
 )
 from PyQt5.QtCore import Qt, QTimer, pyqtSlot
 from PyQt5.QtGui import QFont, QPixmap
@@ -30,7 +30,7 @@ import pyqtgraph as pg
 
 from config import (
     AllParams, BasicParams, UploadParams, PhaseDemodParams, PeakDetectionParams,
-    DisplayParams, SaveParams,
+    DisplayParams, SaveParams, TimeSpaceParams,
     ClockSource, TriggerDirection, DataSource, DisplayMode,
     CHANNEL_NUM_OPTIONS, DATA_SOURCE_OPTIONS, CENTER_FREQ_OPTIONS,
     validate_point_num, calculate_fiber_length, calculate_data_rate_mbps,
@@ -41,6 +41,7 @@ from acquisition_thread import AcquisitionThread, SimulatedAcquisitionThread
 from data_saver import FrameBasedFileSaver
 from spectrum_analyzer import RealTimeSpectrumAnalyzer
 from fft_worker import FFTWorkerThread
+from time_space_plot import TimeSpacePlotWidget
 from logger import get_logger
 
 log = get_logger("gui")
@@ -94,6 +95,7 @@ class MainWindow(QMainWindow):
 
         self._setup_ui()
         self._setup_plots()
+        self._setup_time_space_widget()
         self._connect_signals()
 
         self._status_timer = QTimer(self)
@@ -446,6 +448,12 @@ class MainWindow(QMainWindow):
         self.psd_check = QCheckBox("PSD")
         display_layout.addWidget(self.psd_check, 1, 3)
 
+        # Add rad checkbox on second row
+        self.rad_check = QCheckBox("rad")
+        self.rad_check.setChecked(self.params.display.rad_enable)
+        self.rad_check.setToolTip("Convert phase data to radians for display (/ 32767 * π)")
+        display_layout.addWidget(self.rad_check, 2, 0)
+
         layout.addWidget(display_group)
 
         # ===== Data Save =====
@@ -549,56 +557,41 @@ class MainWindow(QMainWindow):
     def _create_plot_panel(self) -> QWidget:
         panel = QWidget()
         layout = QVBoxLayout(panel)
-        layout.setSpacing(10)
-        layout.setContentsMargins(5, 5, 5, 10)
+        layout.setSpacing(5)
+        layout.setContentsMargins(5, 5, 5, 5)
 
+        # Configure pyqtgraph
         pg.setConfigOptions(antialias=True)
 
-        self.plot_widget_1 = pg.PlotWidget(title="Time Domain / Phase Data")
-        self.plot_widget_2 = pg.PlotWidget(title="FFT Spectrum")
-        self.plot_widget_3 = pg.PlotWidget(title="Monitor (FBG Amplitude)")
+        # Create tab widget
+        self.plot_tabs = QTabWidget()
+        self.plot_tabs.setTabPosition(QTabWidget.North)
 
-        for pw in [self.plot_widget_1, self.plot_widget_2, self.plot_widget_3]:
-            pw.setBackground('w')
-            pw.showGrid(x=True, y=True, alpha=0.6)
-            x_axis = pw.getAxis('bottom')
-            y_axis = pw.getAxis('left')
-            x_axis.setStyle(showValues=True, tickLength=5, tickTextOffset=15)
-            y_axis.setStyle(showValues=True, tickLength=5, tickTextOffset=8)
-            pw.getPlotItem().getViewBox().setBackgroundColor('w')
-            pw.getAxis('left').setPen('k')
-            pw.getAxis('bottom').setPen('k')
-            pw.getAxis('left').setTextPen('k')
-            pw.getAxis('bottom').setTextPen('k')
-            font = QFont("Times New Roman", 12)
-            pw.getAxis('left').setTickFont(font)
-            pw.getAxis('bottom').setTickFont(font)
+        # Set tab titles font style
+        self.plot_tabs.setStyleSheet("""
+            QTabWidget::tab-bar {
+                alignment: left;
+            }
+            QTabBar::tab {
+                font-family: 'Arial';
+                font-size: 12px;
+                font-weight: normal;
+                padding: 6px 15px;
+                margin: 1px;
+                min-width: 90px;
+            }
+            QTabBar::tab:selected {
+                font-weight: bold;
+            }
+        """)
 
-        self.plot_widget_1.setLabel('left', 'Amplitude', **{'font-family': 'Times New Roman', 'font-size': '12pt'})
-        self.plot_widget_1.setLabel('bottom', 'Sample', **{'font-family': 'Times New Roman', 'font-size': '12pt'})
-        self.plot_curve_1 = []
+        # Tab 1: Traditional plots (Time/Space + FFT + Monitor)
+        self._create_traditional_plots_tab()
 
-        self.plot_widget_2.setLabel('left', 'Power', units='dB', **{'font-family': 'Times New Roman', 'font-size': '12pt'})
-        self.plot_widget_2.setLabel('bottom', 'Frequency', units='Hz', **{'font-family': 'Times New Roman', 'font-size': '12pt'})
-        self.plot_widget_2.setLogMode(x=False, y=False)
-        self.spectrum_curve = self.plot_widget_2.plot(pen=pg.mkPen('#9467bd', width=1.5))
+        # Tab 2: Time-Space plot
+        self._create_time_space_tab()
 
-        self.plot_widget_3.setLabel('left', 'Amplitude', **{'font-family': 'Times New Roman', 'font-size': '12pt'})
-        self.plot_widget_3.setLabel('bottom', 'FBG Index', **{'font-family': 'Times New Roman', 'font-size': '12pt'})
-        self.monitor_curves = []
-
-        for pw, min_h, max_h in [(self.plot_widget_1, 180, 210),
-                                  (self.plot_widget_2, 180, 210),
-                                  (self.plot_widget_3, 130, 160)]:
-            pw.setMinimumHeight(min_h)
-            pw.setMaximumHeight(max_h)
-            pw.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-
-        layout.addWidget(self.plot_widget_1)
-        layout.addWidget(self.plot_widget_2)
-        layout.addWidget(self.plot_widget_3)
-
-        layout.addStretch(1)
+        layout.addWidget(self.plot_tabs)
 
         # System monitoring bar
         monitor_frame = QFrame()
@@ -651,6 +644,111 @@ class MainWindow(QMainWindow):
 
         return panel
 
+    def _create_traditional_plots_tab(self):
+        """Create the traditional plots tab with existing functionality"""
+        tab1_widget = QWidget()
+        tab1_layout = QVBoxLayout(tab1_widget)
+        tab1_layout.setSpacing(10)
+        tab1_layout.setContentsMargins(5, 5, 5, 10)
+
+        # Create plots with improved styling
+        self.plot_widget_1 = pg.PlotWidget()
+        self.plot_widget_2 = pg.PlotWidget()
+        self.plot_widget_3 = pg.PlotWidget()
+
+        # Configure plot styles
+        plot_titles = ["Time Domain Data", "FFT Spectrum", "Monitor (FBG Amplitude)"]
+        self.plot_widgets = [self.plot_widget_1, self.plot_widget_2, self.plot_widget_3]
+
+        for i, pw in enumerate(self.plot_widgets):
+            pw.setBackground('w')
+
+            # Set custom title with Times New Roman font and dark blue color
+            blue_title = f'<span style="color: rgb(0,0,139); font-family: Times New Roman; font-size: 9pt">{plot_titles[i]}</span>'
+            pw.setLabel('top', blue_title)
+
+            # Configure axes
+            x_axis = pw.getAxis('bottom')
+            y_axis = pw.getAxis('left')
+            top_axis = pw.getAxis('top')
+
+            # Show top axis for title but hide its ticks
+            pw.showAxis('top', show=True)
+            pw.showAxis('right', show=False)
+            top_axis.setStyle(showValues=False, tickLength=0)
+
+            # Grid and tick configuration
+            pw.showGrid(x=True, y=True, alpha=0.6)
+
+            # Set fonts - using 8pt as per example project
+            tick_font = QFont("Times New Roman", 8)
+
+            # Configure tick style
+            x_axis.setStyle(showValues=True, tickLength=4, tickTextOffset=6)
+            y_axis.setStyle(showValues=True, tickLength=4, tickTextOffset=4)
+
+            # Set tick fonts
+            x_axis.setTickFont(tick_font)
+            y_axis.setTickFont(tick_font)
+
+            # Set axis colors
+            x_axis.setPen('k')
+            y_axis.setPen('k')
+            x_axis.setTextPen('k')
+            y_axis.setTextPen('k')
+
+        # Set specific labels for each plot
+        self.plot_widget_1.setLabel('bottom', 'Sample Index',
+                                   color='k', **{'font-family': 'Times New Roman', 'font-size': '8pt'})
+        self.plot_widget_1.setLabel('left', 'Amp.',
+                                   color='k', **{'font-family': 'Times New Roman', 'font-size': '8pt'})
+
+        self.plot_widget_2.setLabel('bottom', 'Frequency (Hz)',
+                                   color='k', **{'font-family': 'Times New Roman', 'font-size': '8pt'})
+        self.plot_widget_2.setLabel('left', 'Amp. (dB)',
+                                   color='k', **{'font-family': 'Times New Roman', 'font-size': '8pt'})
+
+        self.plot_widget_3.setLabel('bottom', 'FBG Index',
+                                   color='k', **{'font-family': 'Times New Roman', 'font-size': '8pt'})
+        self.plot_widget_3.setLabel('left', 'Amp.',
+                                   color='k', **{'font-family': 'Times New Roman', 'font-size': '8pt'})
+
+        # Initialize plot curves
+        self.plot_curve_1 = []
+        self.spectrum_curve = self.plot_widget_2.plot(pen=pg.mkPen('#9467bd', width=1.5))
+        self.plot_widget_2.setLogMode(x=False, y=False)
+        self.monitor_curves = []
+
+        # Set plot widget sizes
+        for pw, min_h, max_h in [(self.plot_widget_1, 180, 210),
+                                  (self.plot_widget_2, 180, 210),
+                                  (self.plot_widget_3, 130, 160)]:
+            pw.setMinimumHeight(min_h)
+            pw.setMaximumHeight(max_h)
+            pw.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+
+        # Add widgets to layout
+        tab1_layout.addWidget(self.plot_widget_1)
+        tab1_layout.addWidget(self.plot_widget_2)
+        tab1_layout.addWidget(self.plot_widget_3)
+
+        # Add tab to tab widget
+        self.plot_tabs.addTab(tab1_widget, "Traditional Plots")
+
+    def _create_time_space_tab(self):
+        """Create the time-space tab with TimeSpacePlotWidget"""
+        tab2_widget = QWidget()
+        tab2_layout = QVBoxLayout(tab2_widget)
+        tab2_layout.setSpacing(5)
+        tab2_layout.setContentsMargins(5, 5, 5, 5)
+
+        # Create TimeSpacePlotWidget
+        self.time_space_widget = TimeSpacePlotWidget()
+        tab2_layout.addWidget(self.time_space_widget)
+
+        # Add tab to tab widget
+        self.plot_tabs.addTab(tab2_widget, "Time-Space Plot")
+
     def _setup_plots(self):
         colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728']
 
@@ -661,6 +759,22 @@ class MainWindow(QMainWindow):
         for i in range(2):
             curve = self.plot_widget_3.plot(pen=pg.mkPen(colors[i], width=1.5))
             self.monitor_curves.append(curve)
+
+    def _setup_time_space_widget(self):
+        """Initialize time-space widget with default parameters"""
+        if hasattr(self, 'time_space_widget') and self.time_space_widget:
+            # Set parameters from config
+            ts_params = {
+                'window_frames': self.params.time_space.window_frames,
+                'distance_range_start': self.params.time_space.distance_range_start,
+                'distance_range_end': self.params.time_space.distance_range_end,
+                'time_downsample': self.params.time_space.time_downsample,
+                'space_downsample': self.params.time_space.space_downsample,
+                'colormap_type': self.params.time_space.colormap_type,
+                'vmin': self.params.time_space.vmin,
+                'vmax': self.params.time_space.vmax
+            }
+            self.time_space_widget.set_parameters(ts_params)
 
     # ----- SIGNAL CONNECTIONS -----
 
@@ -733,6 +847,19 @@ class MainWindow(QMainWindow):
         params.display.frame_num = self.frame_num_spin.value()
         params.display.spectrum_enable = self.spectrum_enable_check.isChecked()
         params.display.psd_enable = self.psd_check.isChecked()
+        params.display.rad_enable = self.rad_check.isChecked()
+
+        # Collect time-space parameters if widget exists
+        if hasattr(self, 'time_space_widget') and self.time_space_widget:
+            ts_params = self.time_space_widget.get_parameters()
+            params.time_space.window_frames = ts_params.get('window_frames', 5)
+            params.time_space.distance_range_start = ts_params.get('distance_range_start', 40)
+            params.time_space.distance_range_end = ts_params.get('distance_range_end', 100)
+            params.time_space.time_downsample = ts_params.get('time_downsample', 50)
+            params.time_space.space_downsample = ts_params.get('space_downsample', 2)
+            params.time_space.colormap_type = ts_params.get('colormap_type', "jet")
+            params.time_space.vmin = ts_params.get('vmin', -0.02)
+            params.time_space.vmax = ts_params.get('vmax', 0.02)
 
         params.save.enable = self.save_enable_check.isChecked()
         params.save.path = self.save_path_edit.text()
@@ -1189,6 +1316,14 @@ class MainWindow(QMainWindow):
         if fbg_num == 0:
             return
 
+        # Apply rad conversion for display if enabled (storage data remains original)
+        display_data = data
+        if self.params.display.rad_enable:
+            display_data = data.astype(np.float64) / 32767.0 * np.pi
+
+        # Check which tab is currently active for performance optimization
+        current_tab = self.plot_tabs.currentIndex() if hasattr(self, 'plot_tabs') else 0
+
         if self.params.display.mode == DisplayMode.SPACE:
             region_idx = min(self.params.display.region_index, fbg_num - 1)
 
@@ -1196,48 +1331,76 @@ class MainWindow(QMainWindow):
                 space_data = []
                 for i in range(frame_num):
                     idx = region_idx + fbg_num * i
-                    if idx < len(data):
-                        space_data.append(data[idx])
+                    if idx < len(display_data):
+                        space_data.append(display_data[idx])
                 space_data = np.array(space_data)
-                self.plot_curve_1[0].setData(space_data)
-                for i in range(1, 4):
-                    self.plot_curve_1[i].setData([])
 
-                if self.params.display.spectrum_enable and len(space_data) > 0:
-                    self._update_spectrum(space_data, self.params.basic.scan_rate,
-                                         self.params.display.psd_enable, 'int')
+                # Update Tab1 (traditional plots) only if it's active or if no tabs
+                if current_tab == 0 or current_tab is None:
+                    self.plot_curve_1[0].setData(space_data)
+                    for i in range(1, 4):
+                        self.plot_curve_1[i].setData([])
+
+                    if self.params.display.spectrum_enable and len(space_data) > 0:
+                        self._update_spectrum(space_data, self.params.basic.scan_rate,
+                                             self.params.display.psd_enable, 'int')
+
+                # Update Tab2 (time-space plot) if it's active and widget exists
+                if current_tab == 1 and hasattr(self, 'time_space_widget'):
+                    # Send data to time-space widget
+                    self.time_space_widget.update_data(display_data, channel_num)
             else:
-                if len(data.shape) == 1:
-                    data = data.reshape(-1, channel_num)
-                for ch in range(min(channel_num, 2)):
-                    space_data = []
-                    for i in range(frame_num):
-                        idx = region_idx + fbg_num * i
-                        if idx < len(data):
-                            space_data.append(data[idx, ch])
-                    self.plot_curve_1[ch].setData(np.array(space_data))
-                for i in range(channel_num, 4):
-                    self.plot_curve_1[i].setData([])
+                if len(display_data.shape) == 1:
+                    display_data = display_data.reshape(-1, channel_num)
+
+                # Update Tab1 only if it's active
+                if current_tab == 0 or current_tab is None:
+                    for ch in range(min(channel_num, 2)):
+                        space_data = []
+                        for i in range(frame_num):
+                            idx = region_idx + fbg_num * i
+                            if idx < len(display_data):
+                                space_data.append(display_data[idx, ch])
+                        self.plot_curve_1[ch].setData(np.array(space_data))
+                    for i in range(channel_num, 4):
+                        self.plot_curve_1[i].setData([])
+
+                # Update Tab2 if it's active and widget exists
+                if current_tab == 1 and hasattr(self, 'time_space_widget'):
+                    self.time_space_widget.update_data(display_data, channel_num)
         else:
             # Time mode: overlay multiple frames
             if channel_num == 1:
-                for i in range(min(4, frame_num)):
-                    start = i * fbg_num
-                    end = start + fbg_num
-                    if end <= len(data):
-                        self.plot_curve_1[i].setData(data[start:end])
-                    else:
-                        self.plot_curve_1[i].setData([])
+                # Update Tab1 only if it's active
+                if current_tab == 0 or current_tab is None:
+                    for i in range(min(4, frame_num)):
+                        start = i * fbg_num
+                        end = start + fbg_num
+                        if end <= len(display_data):
+                            self.plot_curve_1[i].setData(display_data[start:end])
+                        else:
+                            self.plot_curve_1[i].setData([])
 
-                if self.params.display.spectrum_enable and fbg_num <= len(data):
-                    self._update_spectrum(data[:fbg_num], self.params.basic.scan_rate,
-                                         self.params.display.psd_enable, 'int')
+                    if self.params.display.spectrum_enable and fbg_num <= len(display_data):
+                        self._update_spectrum(display_data[:fbg_num], self.params.basic.scan_rate,
+                                             self.params.display.psd_enable, 'int')
+
+                # Update Tab2 if it's active and widget exists
+                if current_tab == 1 and hasattr(self, 'time_space_widget'):
+                    self.time_space_widget.update_data(display_data, channel_num)
             else:
-                if len(data.shape) == 1:
-                    data = data.reshape(-1, channel_num)
-                for ch in range(min(channel_num, 4)):
-                    if fbg_num <= len(data):
-                        self.plot_curve_1[ch].setData(data[:fbg_num, ch])
+                if len(display_data.shape) == 1:
+                    display_data = display_data.reshape(-1, channel_num)
+
+                # Update Tab1 only if it's active
+                if current_tab == 0 or current_tab is None:
+                    for ch in range(min(channel_num, 4)):
+                        if fbg_num <= len(display_data):
+                            self.plot_curve_1[ch].setData(display_data[:fbg_num, ch])
+
+                # Update Tab2 if it's active and widget exists
+                if current_tab == 1 and hasattr(self, 'time_space_widget'):
+                    self.time_space_widget.update_data(display_data, channel_num)
 
         if self.acq_thread is not None:
             self.frames_label.setText(f"Frames: {self.acq_thread.frames_acquired}")
