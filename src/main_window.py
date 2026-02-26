@@ -211,16 +211,16 @@ class MainWindow(QMainWindow):
         panel.setStyleSheet("""
             QGroupBox {
                 font-family: 'Arial';
-                font-size: 9px;
+                font-size: 10px;
                 font-weight: bold;
             }
             QLabel {
                 font-family: 'Times New Roman';
-                font-size: 8px;
+                font-size: 10px;
             }
             QSpinBox, QDoubleSpinBox, QComboBox, QLineEdit {
                 font-family: 'Times New Roman';
-                font-size: 8px;
+                font-size: 10px;
                 max-height: 22px;
             }
             QComboBox {
@@ -228,11 +228,11 @@ class MainWindow(QMainWindow):
             }
             QRadioButton, QCheckBox {
                 font-family: 'Times New Roman';
-                font-size: 8px;
+                font-size: 10px;
             }
             QPushButton {
                 font-family: 'Times New Roman';
-                font-size: 8px;
+                font-size: 10px;
             }
         """)
 
