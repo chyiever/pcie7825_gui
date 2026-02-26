@@ -139,6 +139,10 @@ class AcquisitionThread(QThread):
                         if points_in_buffer >= expected_points:
                             break
 
+                        # Check if stop was requested during wait
+                        if not self._running:
+                            break
+
                         self._adjust_polling_interval(points_in_buffer, expected_points)
                         time.sleep(self._current_polling_interval)
                         wait_count += 1
@@ -157,12 +161,20 @@ class AcquisitionThread(QThread):
                 if not self._running:
                     break
 
-                # Read data
+                # Read data with stop check
                 try:
+                    # Check stop before expensive read operation
+                    if not self._running:
+                        break
+
                     if self._data_source == DataSource.PHASE:
                         self._read_phase_data()
                     else:
                         self._read_raw_data()
+
+                    # Check stop after read operation
+                    if not self._running:
+                        break
                 except WFBG7825Error as e:
                     log.error(f"Read error: {e}")
                     self.error_occurred.emit(str(e))

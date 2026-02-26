@@ -1109,6 +1109,7 @@ class MainWindow(QMainWindow):
             # Peak detection logic optimization:
             # 1. Raw/Amplitude mode: no peak detection needed
             # 2. Phase mode: only if not already done
+            log.info(f"DEBUG: data_source={params.upload.data_source}, DataSource.PHASE={DataSource.PHASE}, peak_done={self._peak_detection_done}")
             if params.upload.data_source == DataSource.PHASE and not self._peak_detection_done:
                 log.info("Phase mode: Running peak detection (required for phase data sizing)...")
                 try:
