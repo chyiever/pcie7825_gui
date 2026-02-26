@@ -300,6 +300,13 @@ class TimeSpacePlotWidget(QWidget):
         self.plot_widget.setLabel('left', 'FBG Index', color='k',
                                  **{'font-family': 'Times New Roman', 'font-size': '8pt'})
 
+        # 设置坐标轴刻度颜色为黑色
+        plot_item = self.plot_widget.getPlotItem()
+        plot_item.getAxis('bottom').setPen(color='k')
+        plot_item.getAxis('left').setPen(color='k')
+        plot_item.getAxis('bottom').setTextPen(color='k')
+        plot_item.getAxis('left').setTextPen(color='k')
+
         # Configure view box
         view_box = self.plot_widget.getViewBox()
         view_box.setAspectLocked(False)
@@ -343,6 +350,25 @@ class TimeSpacePlotWidget(QWidget):
             if hasattr(self.histogram_widget, 'gradient'):
                 self.histogram_widget.gradient.setTickFont(QFont("Times New Roman", 7))
 
+            # 使用更强化的白色背景设置方法
+            # 设置主容器样式
+            self.histogram_widget.setStyleSheet("""
+                QWidget {
+                    background-color: white;
+                    color: black;
+                }
+                QGraphicsView {
+                    background-color: white;
+                    border: none;
+                }
+                HistogramLUTWidget {
+                    background-color: white;
+                }
+                GraphicsView {
+                    background-color: white;
+                }
+            """)
+
             # Set all possible background components to white
             components_to_set = []
 
@@ -371,22 +397,11 @@ class TimeSpacePlotWidget(QWidget):
             if hasattr(self.histogram_widget, 'setBackground'):
                 self.histogram_widget.setBackground('w')
 
-            # Use comprehensive stylesheet
-            self.histogram_widget.setStyleSheet("""
-                QWidget {
-                    background-color: white;
-                }
-                QGraphicsView {
-                    background-color: white;
-                    border: none;
-                }
-                HistogramLUTWidget {
-                    background-color: white;
-                }
-                GraphicsView {
-                    background-color: white;
-                }
-            """)
+            # 设置渐变编辑器背景
+            if hasattr(self.histogram_widget, 'gradient'):
+                gradient = self.histogram_widget.gradient
+                if gradient:
+                    gradient.setStyleSheet("background-color: white; color: black;")
 
             log.debug("Applied comprehensive white background to histogram widget")
 
@@ -398,26 +413,27 @@ class TimeSpacePlotWidget(QWidget):
         try:
             # Try to get the colormap - handle different PyQtGraph versions
             try:
-                if self._colormap == "jet":
-                    # Try different methods to get jet colormap
-                    try:
-                        colormap = pg.colormap.get("jet")
-                    except:
-                        colormap = pg.ColorMap([0, 1], [[0, 0, 128, 255], [255, 0, 0, 255]])  # Blue to red
-                elif self._colormap == "viridis":
-                    colormap = pg.colormap.get("viridis")
-                elif self._colormap == "plasma":
-                    colormap = pg.colormap.get("plasma")
-                elif self._colormap == "gray":
-                    colormap = pg.colormap.get("gray")
-                else:
-                    # Fallback: create a simple blue-to-red colormap
-                    colormap = pg.ColorMap([0, 0.5, 1], [[0, 0, 255, 255], [0, 255, 0, 255], [255, 0, 0, 255]])
-
+                # 使用正确的colormap映射
+                colormap = pg.colormap.get(self._colormap)
+                log.debug(f"Successfully loaded colormap: {self._colormap}")
             except Exception as e:
                 log.debug(f"Could not get colormap {self._colormap}: {e}")
-                # Create fallback colormap
-                colormap = pg.ColorMap([0, 0.5, 1], [[0, 0, 255, 255], [0, 255, 0, 255], [255, 0, 0, 255]])
+                # Create fallback colormaps
+                if self._colormap == "jet":
+                    colormap = pg.ColorMap([0, 0.25, 0.5, 0.75, 1],
+                                         [[0, 0, 128, 255], [0, 0, 255, 255], [0, 255, 255, 255],
+                                          [255, 255, 0, 255], [255, 0, 0, 255]])
+                elif self._colormap == "viridis":
+                    colormap = pg.ColorMap([0, 0.25, 0.5, 0.75, 1],
+                                         [[68, 1, 84, 255], [71, 44, 122, 255], [59, 81, 139, 255],
+                                          [44, 123, 142, 255], [33, 144, 141, 255]])
+                elif self._colormap == "gray":
+                    colormap = pg.ColorMap([0, 1], [[0, 0, 0, 255], [255, 255, 255, 255]])
+                else:
+                    # Default jet-like colormap
+                    colormap = pg.ColorMap([0, 0.25, 0.5, 0.75, 1],
+                                         [[0, 0, 128, 255], [0, 0, 255, 255], [0, 255, 255, 255],
+                                          [255, 255, 0, 255], [255, 0, 0, 255]])
 
             # Apply colormap to histogram widget if available
             if hasattr(self, 'histogram_widget') and self.histogram_widget:
@@ -426,6 +442,7 @@ class TimeSpacePlotWidget(QWidget):
                     gradient = self.histogram_widget.gradient
                     if hasattr(gradient, 'setColorMap'):
                         gradient.setColorMap(colormap)
+                        log.debug(f"Applied colormap to histogram gradient: {self._colormap}")
                     else:
                         # Fallback: set lookup table
                         lut = colormap.getLookupTable()
@@ -651,7 +668,10 @@ class TimeSpacePlotWidget(QWidget):
                 return
 
             # Set image data (space=Y, time=X)
-            self.image_item.setImage(downsampled_data, levels=(self._vmin, self._vmax))
+            # 注意：PyQtGraph的ImageItem需要转置以获得正确的显示方向
+            # 我们的数据是(space, time)，需要转置为(time, space)以正确显示
+            display_data_transposed = downsampled_data.T  # (time, space)
+            self.image_item.setImage(display_data_transposed, levels=(self._vmin, self._vmax))
 
             # Update axis scaling
             self._update_axis_labels(concatenated_data.shape)
@@ -686,8 +706,8 @@ class TimeSpacePlotWidget(QWidget):
             space_end_actual = min(fbg_num, self._distance_end)
 
             # Set image coordinate mapping
-            # X-axis: time (0 to time_duration_s)
-            # Y-axis: space/FBG index (space_start_actual to space_end_actual)
+            # X-axis: time (从0开始到time_duration_s)
+            # Y-axis: space/FBG index (space_start_actual到space_end_actual)
             rect = QtCore.QRectF(0, space_start_actual, time_duration_s,
                                space_end_actual - space_start_actual)
             self.image_item.setRect(rect)
