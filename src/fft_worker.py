@@ -6,6 +6,7 @@ WFBG-7825 FFT Worker Thread Module
 """
 
 import time
+import gc
 import numpy as np
 from PyQt5.QtCore import QThread, pyqtSignal, QMutex
 from spectrum_analyzer import RealTimeSpectrumAnalyzer, WindowType
@@ -35,7 +36,7 @@ class FFTWorkerThread(QThread):
 
     def calculate_fft(self, data: np.ndarray, psd_mode: bool = False):
         """
-        请求FFT计算
+        请求FFT计算，避免大数据复制
 
         Args:
             data: 输入数据（单帧，1GHz采样率）
@@ -43,15 +44,17 @@ class FFTWorkerThread(QThread):
         """
         self._mutex.lock()
         try:
-            self._pending_data = data.copy()  # 安全复制数据
+            # 优化：仅复制需要的数据长度，减少内存占用
+            max_fft_points = min(len(data), 65536)  # 限制FFT点数，减少内存使用
+            self._pending_data = data[:max_fft_points].copy()  # 仅复制前N点
             self._psd_mode = psd_mode
 
             if not self.isRunning():
                 self._running = True
                 self.start()
-                log.debug("FFT calculation requested, thread started")
+                log.debug(f"FFT calculation requested, using {max_fft_points} points, thread started")
             else:
-                log.debug("FFT calculation requested, data updated")
+                log.debug(f"FFT calculation requested, using {max_fft_points} points, data updated")
         finally:
             self._mutex.unlock()
 
@@ -75,10 +78,14 @@ class FFTWorkerThread(QThread):
                 )
 
                 elapsed_ms = (time.perf_counter() - start_time) * 1000
-                log.debug(f"FFT calculation completed in {elapsed_ms:.1f}ms")
+                log.debug(f"FFT calculation completed in {elapsed_ms:.1f}ms, data size: {len(data)}")
 
                 # 发送结果
                 self.fft_ready.emit(freq, spectrum, df)
+
+                # 清理数据，释放内存
+                del data
+                gc.collect()  # 强制垃圾回收
 
         except Exception as e:
             log.exception(f"FFT calculation error: {e}")

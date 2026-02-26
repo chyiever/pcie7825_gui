@@ -13,6 +13,7 @@ Adapted from PCIe-7821 with 7825-specific features:
 import sys
 import os
 import time
+import gc  # 垃圾回收
 import numpy as np
 import psutil
 import shutil
@@ -83,6 +84,9 @@ class MainWindow(QMainWindow):
         self._last_time_domain_update = 0
         self._last_fft_update = 0
         self._raw_frame_buffer = []  # 存储用于平均的帧
+
+        # 预分配x轴数组，避免重复创建
+        self._x_axis_cache = {}  # 缓存不同长度的x轴数组
 
         # System monitoring
         self._last_system_update = 0
@@ -1476,8 +1480,12 @@ class MainWindow(QMainWindow):
                 # 单通道模式
                 averaged_frame = self._compute_averaged_frame(data, point_num)
                 if averaged_frame is not None:
-                    # 生成x轴数据（从0开始）
-                    x_axis = np.arange(len(averaged_frame))
+                    # 使用缓存的x轴数据，避免重复创建
+                    data_length = len(averaged_frame)
+                    if data_length not in self._x_axis_cache:
+                        self._x_axis_cache[data_length] = np.arange(data_length)
+                    x_axis = self._x_axis_cache[data_length]
+
                     self.plot_curve_1[0].setData(x_axis, averaged_frame)
                     # 清空其他曲线
                     for i in range(1, 4):
@@ -1485,6 +1493,9 @@ class MainWindow(QMainWindow):
 
                     log.debug(f"Single channel: averaged {len(data)//point_num} frames, "
                              f"display {len(averaged_frame)} points")
+
+                    # 显式删除大数组，帮助垃圾回收
+                    del averaged_frame
 
                 # FFT处理（如果启用且间隔满足）
                 fft_interval = RAW_DATA_CONFIG['fft_update_s']
@@ -1517,8 +1528,12 @@ class MainWindow(QMainWindow):
                 ch1_data = data[:, 1]
                 averaged_frame_ch1 = self._compute_averaged_frame(ch1_data, point_num, single_channel=True)
                 if averaged_frame_ch1 is not None:
-                    # 生成x轴数据（从0开始）
-                    x_axis = np.arange(len(averaged_frame_ch1))
+                    # 使用缓存的x轴数据
+                    data_length = len(averaged_frame_ch1)
+                    if data_length not in self._x_axis_cache:
+                        self._x_axis_cache[data_length] = np.arange(data_length)
+                    x_axis = self._x_axis_cache[data_length]
+
                     self.spectrum_curve.setData(x_axis, averaged_frame_ch1)
 
                     # 设置FFT图为时域显示模式
@@ -1529,9 +1544,16 @@ class MainWindow(QMainWindow):
                     self.plot_widget_2.setLabel('left', 'Amplitude (Channel 2)',
                                               **{'font-family': 'Times New Roman', 'font-size': '12pt'})
 
-                log.debug(f"Dual channel: ch0 on time domain plot, ch1 on spectrum plot")
+                    # 清理内存
+                    del averaged_frame_ch1, ch1_data
+
+                log.debug("Dual channel: ch0 on time domain plot, ch1 on spectrum plot")
 
             self._last_time_domain_update = current_time
+
+            # 强制垃圾回收，释放大数组内存
+            if self._data_count % 5 == 0:  # 每5次更新进行一次垃圾回收
+                gc.collect()
 
         except Exception as e:
             log.exception(f"Error in _update_raw_display: {e}")
@@ -1542,7 +1564,7 @@ class MainWindow(QMainWindow):
 
     def _compute_averaged_frame(self, data: np.ndarray, point_num: int, single_channel: bool = False) -> Optional[np.ndarray]:
         """
-        计算4帧平均数据
+        计算4帧平均数据，使用内存优化策略
 
         Args:
             data: 输入数据
@@ -1572,25 +1594,30 @@ class MainWindow(QMainWindow):
             # 最多使用4帧进行平均
             frames_to_use = min(available_frames, 4)
 
+            # 优化：预分配结果数组，避免重复分配
             if single_channel or len(data.shape) == 1:
-                # 一维数据
-                frames = []
-                for i in range(frames_to_use):
-                    start = i * point_num
-                    end = start + point_num
-                    frames.append(data[start:end])
+                # 一维数据 - 直接使用numpy的reshape和mean，更高效
+                if frames_to_use == 1:
+                    # 只有一帧时直接返回
+                    return data[:point_num].astype(np.int32)
+
+                # 多帧时使用reshape进行批量处理
+                total_points_to_use = frames_to_use * point_num
+                reshaped_data = data[:total_points_to_use].reshape(frames_to_use, point_num)
+                averaged = np.mean(reshaped_data, axis=0, dtype=np.float32)  # 使用float32减少内存
+                return averaged.astype(np.int32)
             else:
-                # 多维数据（应该不会到达这里，但保险起见）
+                # 多维数据的处理保持不变
                 frames = []
                 for i in range(frames_to_use):
                     start = i * point_num
                     end = start + point_num
                     frames.append(data[start:end, 0])  # 取第一列
 
-            # 计算平均并取整
-            frames_array = np.array(frames)
-            averaged = np.mean(frames_array, axis=0)
-            return averaged.astype(np.int32)  # 取整数
+                # 计算平均并取整
+                frames_array = np.array(frames, dtype=np.float32)
+                averaged = np.mean(frames_array, axis=0)
+                return averaged.astype(np.int32)
 
         except Exception as e:
             log.exception(f"Error computing averaged frame: {e}")
