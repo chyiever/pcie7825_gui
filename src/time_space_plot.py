@@ -4,8 +4,8 @@ Time-Space Plot Widget for WFBG-7825
 PyQt5 widget for 2D time-space visualization of DAS phase data.
 Implements rolling window display with configurable parameters.
 
-Based on PlotWidget+ImageItem approach for reliable axis control.
-Adapted from example project's TimeSpacePlotWidgetV2 implementation.
+Based on PlotWidget+ImageItem+HistogramLUTWidget approach for reliable axis control.
+Provides complete control over axes, colormap, and display parameters.
 """
 
 import numpy as np
@@ -43,10 +43,11 @@ COLORMAP_OPTIONS = [
 
 class TimeSpacePlotWidget(QWidget):
     """
-    Time-Space plot widget based on PlotWidget+ImageItem.
+    Time-Space plot widget based on PlotWidget+ImageItem+HistogramLUTWidget.
 
-    Provides reliable 2D time-space visualization with full axis control.
-    Adapted from example project for WFBG-7825 DAS system.
+    Provides reliable 2D time-space visualization with full axis control,
+    configurable colormap, and white background color bar.
+    Designed specifically for WFBG-7825 DAS system phase data visualization.
     """
 
     # Signals
@@ -317,6 +318,9 @@ class TimeSpacePlotWidget(QWidget):
         self.histogram_widget.setMinimumWidth(120)
         self.histogram_widget.setMaximumWidth(150)
 
+        # 直接设置背景为白色（关键步骤）
+        self.histogram_widget.setBackground('w')
+
         # Connect image to histogram
         self.histogram_widget.setImageItem(self.image_item)
 
@@ -344,34 +348,36 @@ class TimeSpacePlotWidget(QWidget):
         log.info("Successfully created PlotWidget+ImageItem with histogram widget")
 
     def _set_histogram_white_background(self):
-        """Set histogram widget background to white - 参考example_reference完整实现"""
+        """Set histogram widget background to white - 确保颜色条白色背景"""
         try:
-            # Set font first
-            if hasattr(self.histogram_widget, 'gradient'):
-                self.histogram_widget.gradient.setTickFont(QFont("Times New Roman", 7))
-
-            # 参考example_reference的完整白色背景设置
-            # 1. 直接设置背景颜色
+            # 1. 再次确保背景设置 (关键步骤)
             if hasattr(self.histogram_widget, 'setBackground'):
                 self.histogram_widget.setBackground('w')
+                log.debug("Called histogram_widget.setBackground('w')")
 
-            # 2. 使用StyleSheet设置背景
-            self.histogram_widget.setStyleSheet("background-color: white;")
+            # 2. 设置坐标轴字体和颜色 (参考_setup_colorbar_font)
+            plot_item = getattr(self.histogram_widget, 'plotItem', None)
+            if plot_item:
+                font = QFont("Times New Roman", 8)
 
-            # 3. 设置PlotItem背景
-            plot_item = self.histogram_widget.plotItem
-            if plot_item and hasattr(plot_item, 'getViewBox'):
-                view_box = plot_item.getViewBox()
-                if view_box and hasattr(view_box, 'setBackgroundColor'):
-                    view_box.setBackgroundColor('w')
+                # 设置左轴 (颜色条的刻度轴)
+                axis = plot_item.getAxis('left')
+                if axis:
+                    axis.setTickFont(font)
+                    axis.setPen('k')  # 黑色轴线
+                    axis.setTextPen('k')  # 黑色文字
+                    axis.setStyle(showValues=True)
+                    log.debug("Set histogram axis font and colors")
 
-            # 4. 设置gradient编辑器背景
+            # 3. 设置gradient字体 (如果存在)
             if hasattr(self.histogram_widget, 'gradient'):
-                gradient = self.histogram_widget.gradient
-                if gradient:
-                    gradient.setStyleSheet("background-color: white;")
+                try:
+                    self.histogram_widget.gradient.setTickFont(QFont("Times New Roman", 7))
+                    log.debug("Set gradient font")
+                except Exception as e:
+                    log.debug(f"Could not set gradient font: {e}")
 
-            log.debug("Applied comprehensive white background to histogram widget (example_reference style)")
+            log.debug("Applied comprehensive white background to histogram widget")
 
         except Exception as e:
             log.debug(f"Error in _set_histogram_white_background: {e}")
@@ -380,7 +386,7 @@ class TimeSpacePlotWidget(QWidget):
         """Apply the selected colormap to the image item and histogram widget."""
         try:
             # Create custom colormaps to ensure distinct color schemes
-            # 参考example_reference的实现，创建明显不同的色彩映射
+            # 创建明显不同的色彩映射，确保每种colormap都有独特效果
             if self._colormap == "jet":
                 colors = [
                     (0.0, (0, 0, 128)),      # dark blue

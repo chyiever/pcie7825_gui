@@ -49,8 +49,8 @@ class BasicParams:
     clk_src: int = ClockSource.INTERNAL
     trig_dir: int = TriggerDirection.OUTPUT
     scan_rate: int = 2000
-    pulse_width_ns: int = 100
-    point_num_per_scan: int = 20480
+    pulse_width_ns: int = 60
+    point_num_per_scan: int = 10240
     bypass_point_num: int = 60
     center_freq_mhz: int = 200
 
@@ -94,14 +94,14 @@ class TimeSpaceParams:
         vmin: Minimum value for color mapping
         vmax: Maximum value for color mapping
     """
-    window_frames: int = 5              # Rolling window size in frames
+    window_frames: int = 1              # Rolling window size in frames
     distance_range_start: int = 40      # Start index for FBG range
     distance_range_end: int = 100       # End index for FBG range
-    time_downsample: int = 50           # Time downsampling factor
-    space_downsample: int = 2           # Space downsampling factor
-    colormap_type: str = "jet"          # PyQtGraph colormap name
-    vmin: float = -0.02                 # Color range minimum (for phase data)
-    vmax: float = 0.02                  # Color range maximum (for phase data)
+    time_downsample: int = 10           # Time downsampling factor
+    space_downsample: int = 1           # Space downsampling factor
+    colormap_type: str = "hsv"          # PyQtGraph colormap name
+    vmin: float = -0.1                 # Color range minimum (for phase data)
+    vmax: float = 0.1                  # Color range maximum (for phase data)
 
 
 @dataclass
@@ -109,8 +109,8 @@ class DisplayParams:
     """Real-time display configuration."""
     mode: int = DisplayMode.TIME
     region_index: int = 0       # FBG index for SPACE mode
-    frame_num: int = 1024
-    spectrum_enable: bool = True
+    frame_num: int = 1000
+    spectrum_enable: bool = False
     psd_enable: bool = False
     rad_enable: bool = False    # Convert phase data to radians for display (storage unaffected)
 
