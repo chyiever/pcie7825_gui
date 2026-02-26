@@ -240,9 +240,9 @@ MONITOR_UPDATE_INTERVALS = {
 # ----- RAW DATA OPTIMIZATION CONSTANTS -----
 
 RAW_DATA_CONFIG = {
-    'gui_frame_limit': 4,               # 仅传输前4帧给GUI
-    'time_domain_update_s': 1.0,        # 时域图更新间隔(秒)
-    'fft_update_s': 3.0,               # FFT更新间隔(秒)
-    'frame_averaging': True,            # 启用4帧平均
-    'max_gui_update_fps': 1.0,         # GUI最大更新频率(FPS)
+    'gui_frame_limit': 1,               # 仅传输前1帧给GUI (从4减少到1)
+    'time_domain_update_s': 3.0,        # 时域图更新间隔(秒) (从1.0增加到3.0)
+    'fft_update_s': 5.0,               # FFT更新间隔(秒) (从3.0增加到5.0)
+    'frame_averaging': False,           # 禁用4帧平均 (从True改为False)
+    'max_gui_update_fps': 0.33,        # GUI最大更新频率(FPS) (从1.0降低到0.33)
 }

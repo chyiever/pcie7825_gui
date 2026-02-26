@@ -1106,9 +1106,11 @@ class MainWindow(QMainWindow):
             if not self._configure_device(params):
                 return
 
-            # Must run peak detection before start
-            if not self._peak_detection_done:
-                log.info("Running peak detection (required before start)...")
+            # Peak detection logic optimization:
+            # 1. Raw/Amplitude mode: no peak detection needed
+            # 2. Phase mode: only if not already done
+            if params.upload.data_source == DataSource.PHASE and not self._peak_detection_done:
+                log.info("Phase mode: Running peak detection (required for phase data sizing)...")
                 try:
                     (ch0_cnt, ch0_info, ch0_amp,
                      ch1_cnt, ch1_info, ch1_amp) = self.api.get_peak_info(
@@ -1120,18 +1122,30 @@ class MainWindow(QMainWindow):
                     self._ch1_peak_info = ch1_info
                     self.ch0_peak_label.setText(str(ch0_cnt))
                     self.ch1_peak_label.setText(str(ch1_cnt))
+                    self._peak_detection_done = True
                 except WFBG7825Error as e:
                     QMessageBox.critical(self, "Error", f"Peak detection failed: {e}")
                     return
+            elif params.upload.data_source != DataSource.PHASE:
+                log.info("Raw/Amplitude mode: Skipping peak detection (not required)")
+                # Set default fbg_num for non-phase modes (not actually used)
+                if self._fbg_num_per_ch == 0:
+                    self._fbg_num_per_ch = 1
+            else:
+                log.info("Phase mode: Using existing peak detection results")
 
-            # Get valid FBG num
-            try:
-                fbg_num = self.api.get_valid_fbg_num()
-                self._fbg_num_per_ch = fbg_num
-                self.valid_fbg_label.setText(str(fbg_num))
-            except WFBG7825Error as e:
-                QMessageBox.critical(self, "Error", f"Failed to get FBG num: {e}")
-                return
+            # Get valid FBG num for phase mode
+            if params.upload.data_source == DataSource.PHASE:
+                try:
+                    fbg_num = self.api.get_valid_fbg_num()
+                    self._fbg_num_per_ch = fbg_num
+                    self.valid_fbg_label.setText(str(fbg_num))
+                    log.info(f"Using FBG num: {fbg_num} for phase mode")
+                except WFBG7825Error as e:
+                    QMessageBox.critical(self, "Error", f"Failed to get valid FBG num: {e}")
+                    return
+            else:
+                log.info(f"Raw/Amplitude mode: FBG num not required (using default: {self._fbg_num_per_ch})")
 
             # Allocate buffers
             self.api.allocate_buffers(
