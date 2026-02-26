@@ -64,7 +64,7 @@ class TimeSpacePlotWidget(QWidget):
         self._window_frames = 5
         self._distance_start = 40
         self._distance_end = 100
-        self._time_downsample = 50
+        self._time_downsample = 5  # 降低默认时间下采样，从50改为5
         self._space_downsample = 2
         self._colormap = "jet"
         self._vmin = -0.02
@@ -176,7 +176,7 @@ class TimeSpacePlotWidget(QWidget):
 
         self.time_downsample_spin = QSpinBox()
         self.time_downsample_spin.setRange(1, 1000)
-        self.time_downsample_spin.setValue(self._time_downsample)
+        self.time_downsample_spin.setValue(5)  # 默认值从50改为5
         self.time_downsample_spin.setMaximumWidth(70)
         self.time_downsample_spin.setMinimumHeight(22)
         self.time_downsample_spin.setFont(QFont("Times New Roman", 8))
@@ -522,7 +522,7 @@ class TimeSpacePlotWidget(QWidget):
         self._distance_start = 40
         self._distance_end = 100
         self._window_frames = 5
-        self._time_downsample = 50
+        self._time_downsample = 5  # 重置时也使用新的默认值
         self._space_downsample = 2
         self._vmin = -0.02
         self._vmax = 0.02
@@ -532,7 +532,7 @@ class TimeSpacePlotWidget(QWidget):
         self.distance_start_spin.setValue(self._distance_start)
         self.distance_end_spin.setValue(self._distance_end)
         self.window_frames_spin.setValue(self._window_frames)
-        self.time_downsample_spin.setValue(self._time_downsample)
+        self.time_downsample_spin.setValue(5)  # 重置值也改为5
         self.space_downsample_spin.setValue(self._space_downsample)
         self.vmin_spin.setValue(self._vmin)
         self.vmax_spin.setValue(self._vmax)
@@ -617,8 +617,20 @@ class TimeSpacePlotWidget(QWidget):
                 # Multi-channel data: select first channel
                 windowed_data = windowed_data[:, 0, :]
 
+            # 确保时间维度至少有2个点用于显示
+            if windowed_data.shape[0] < 2:
+                log.debug(f"Insufficient time samples ({windowed_data.shape[0]}), skipping display")
+                return
+
+            # 调整时间下采样以确保有足够的时间点
+            actual_time_step = min(time_step, windowed_data.shape[0] // 2)
+
             # Downsample
-            downsampled_data = windowed_data[::time_step, ::space_step]
+            downsampled_data = windowed_data[::actual_time_step, ::space_step]
+
+            # 确保下采样后仍有足够的时间点
+            if downsampled_data.shape[0] < 2:
+                downsampled_data = windowed_data[:2, ::space_step]  # 至少取前两帧
 
             # Transpose for correct display orientation (time=X, space=Y)
             display_data = downsampled_data.T

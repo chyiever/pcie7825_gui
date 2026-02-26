@@ -152,6 +152,9 @@ class MainWindow(QMainWindow):
         self.statusBar.addWidget(self._data_rate_label)
         self.statusBar.addWidget(self._fiber_length_label)
 
+        # 统一设置参数控件字体
+        self._apply_uniform_fonts()
+
     def _create_header(self) -> QWidget:
         header = QFrame()
         header.setFrameStyle(QFrame.StyledPanel)
@@ -180,6 +183,30 @@ class MainWindow(QMainWindow):
 
         return header
 
+    def _apply_uniform_fonts(self):
+        """统一设置参数控件字体"""
+        # 标题字体：Arial 9pt 加粗（已在QGroupBox中设置）
+
+        # 参数控件字体：Times New Roman 8pt
+        control_font = QFont("Times New Roman", 8)
+
+        # 递归设置所有参数控件字体
+        def set_widget_fonts(widget):
+            if isinstance(widget, (QLabel, QLineEdit, QComboBox, QSpinBox,
+                                   QDoubleSpinBox, QCheckBox, QRadioButton, QPushButton)):
+                # 排除标题标签（通常使用较大字体）
+                if not isinstance(widget, QLabel) or widget.font().pointSize() <= 12:
+                    widget.setFont(control_font)
+
+            # 递归处理子控件
+            for child in widget.children():
+                if isinstance(child, QWidget):
+                    set_widget_fonts(child)
+
+        # 应用到参数面板
+        if hasattr(self, 'parameter_panel'):
+            set_widget_fonts(self.parameter_panel)
+
     def _create_parameter_panel(self) -> QWidget:
         # Use scroll area to handle small screens
         scroll = QScrollArea()
@@ -187,6 +214,8 @@ class MainWindow(QMainWindow):
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
 
         panel = QWidget()
+        # 保存面板引用以便后续字体设置
+        self.parameter_panel = panel
         layout = QVBoxLayout(panel)
         layout.setSpacing(6)
         layout.setContentsMargins(5, 5, 5, 5)
@@ -224,6 +253,8 @@ class MainWindow(QMainWindow):
 
         # ===== Basic Parameters =====
         basic_group = QGroupBox("Basic Parameters")
+        # 设置标题字体：Arial 加粗
+        basic_group.setFont(QFont("Arial", 9, QFont.Bold))
         basic_layout = QGridLayout(basic_group)
         basic_layout.setSpacing(4)
         basic_layout.setContentsMargins(8, 12, 8, 8)
@@ -258,7 +289,7 @@ class MainWindow(QMainWindow):
         # Row 1: Scan Rate | Pulse Width
         basic_layout.addWidget(QLabel("Scan(Hz):"), 1, 0)
         self.scan_rate_spin = QSpinBox()
-        self.scan_rate_spin.setRange(1, 100000)
+        self.scan_rate_spin.setRange(1, 1000000)
         self.scan_rate_spin.setValue(2000)
         self.scan_rate_spin.setMinimumHeight(INPUT_MIN_HEIGHT)
         self.scan_rate_spin.setMaximumWidth(INPUT_MAX_WIDTH)
@@ -306,6 +337,8 @@ class MainWindow(QMainWindow):
 
         # ===== Upload Parameters =====
         upload_group = QGroupBox("Upload Parameters")
+        # 设置标题字体：Arial 加粗
+        upload_group.setFont(QFont("Arial", 9, QFont.Bold))
         upload_layout = QGridLayout(upload_group)
         upload_layout.setSpacing(4)
         upload_layout.setContentsMargins(8, 12, 8, 8)
@@ -331,6 +364,8 @@ class MainWindow(QMainWindow):
 
         # ===== Phase Demod Parameters (simplified for 7825) =====
         phase_group = QGroupBox("Phase Demod Parameters")
+        # 设置标题字体：Arial 加粗
+        phase_group.setFont(QFont("Arial", 9, QFont.Bold))
         phase_layout = QGridLayout(phase_group)
         phase_layout.setSpacing(4)
         phase_layout.setContentsMargins(8, 12, 8, 8)
@@ -351,6 +386,8 @@ class MainWindow(QMainWindow):
 
         # ===== Peak Detection (NEW for 7825) =====
         peak_group = QGroupBox("Peak Detection")
+        # 设置标题字体：Arial 加粗
+        peak_group.setFont(QFont("Arial", 9, QFont.Bold))
         peak_layout = QGridLayout(peak_group)
         peak_layout.setSpacing(4)
         peak_layout.setContentsMargins(8, 12, 8, 8)
@@ -438,6 +475,8 @@ class MainWindow(QMainWindow):
 
         # ===== Display Control =====
         display_group = QGroupBox("Display Control")
+        # 设置标题字体：Arial 加粗
+        display_group.setFont(QFont("Arial", 9, QFont.Bold))
         display_layout = QGridLayout(display_group)
         display_layout.setSpacing(4)
         display_layout.setContentsMargins(8, 12, 8, 8)
@@ -488,6 +527,8 @@ class MainWindow(QMainWindow):
 
         # ===== Data Save =====
         save_group = QGroupBox("Data Save")
+        # 设置标题字体：Arial 加粗
+        save_group.setFont(QFont("Arial", 9, QFont.Bold))
         save_layout = QGridLayout(save_group)
         save_layout.setSpacing(4)
         save_layout.setContentsMargins(8, 12, 8, 8)
@@ -1674,10 +1715,19 @@ class MainWindow(QMainWindow):
         if not is_phase:
             self.mode_time_radio.setChecked(True)
 
+        # 重新评估spectrum和PSD选项的可用性
+        self._update_spectrum_psd_availability()
+
         self._update_calculated_values()
 
     def _on_channel_changed(self, index: int):
         """处理通道数量变化，控制FFT功能可用性"""
+        # 重新评估spectrum和PSD选项的可用性
+        self._update_spectrum_psd_availability()
+        self._update_calculated_values()
+
+    def _update_spectrum_psd_availability(self):
+        """更新spectrum和PSD选项的可用性"""
         channel_num = self.channel_combo.currentData() or 1
         data_source = self.data_source_combo.currentData() or DataSource.RAW
 
@@ -1699,8 +1749,10 @@ class MainWindow(QMainWindow):
             # FFT子图始终可见（双通道时用于显示第二通道）
             if hasattr(self, 'plot_widget_2'):
                 self.plot_widget_2.setVisible(True)
-
-        self._update_calculated_values()
+        else:
+            # Phase数据模式下，重新启用选项
+            self.spectrum_enable_check.setEnabled(True)
+            self.psd_check.setEnabled(True)
 
     def _browse_save_path(self):
         path = QFileDialog.getExistingDirectory(self, "Select Save Directory", self.save_path_edit.text())
