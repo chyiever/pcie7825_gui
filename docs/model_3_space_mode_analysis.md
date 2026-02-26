@@ -8,7 +8,27 @@
 
 ### 1.1 模式对比
 - **Time模式**：显示多个时间帧的FBG空间分布（叠加显示）
+  - 在同一个图上绘制最多4条不同颜色的曲线
+  - 每条曲线代表一个时间帧的所有FBG空间分布
+  - X轴：FBG位置索引，Y轴：相位值
+  - 观察空间分布模式随时间的演化
 - **Space模式**：显示单个FBG传感点的时间序列变化（指定位置波形）
+  - 选择特定FBG索引，绘制其在所有时间帧的变化
+  - X轴：时间帧，Y轴：相位值
+  - 观察单点随时间的变化趋势
+
+**Time模式叠加显示示例**：
+```python
+# main_window.py:1424-1430
+for i in range(min(4, frame_num)):           # 最多显示4帧
+    start = i * fbg_num                      # 第i帧起始：i*223
+    end = start + fbg_num                    # 第i帧结束：(i+1)*223
+    self.plot_curve_1[i].setData(display_data[start:end])  # 曲线i显示第i帧
+```
+- 曲线0：display_data[0:223] - 第0帧所有FBG
+- 曲线1：display_data[223:446] - 第1帧所有FBG
+- 曲线2：display_data[446:669] - 第2帧所有FBG
+- 曲线3：display_data[669:892] - 第3帧所有FBG
 
 ### 1.2 核心参数
 - **FBG Idx** (`region_index`)：用户指定的FBG传感点索引
