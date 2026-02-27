@@ -1379,14 +1379,18 @@ class MainWindow(QMainWindow):
 
                 self.plot_widget_2.enableAutoRange(axis='x')
                 self.plot_widget_2.setLabel('bottom', 'Frequency (MHz)',
-                                          **{'font-family': 'Times New Roman', 'font-size': '12pt'})
+                                          **{'font-family': 'Times New Roman', 'font-size': '8pt'})
 
                 if self.params.display.psd_enable:
                     self.plot_widget_2.setLabel('left', 'PSD (dB/Hz)',
-                                              **{'font-family': 'Times New Roman', 'font-size': '12pt'})
+                                              **{'font-family': 'Times New Roman', 'font-size': '8pt'})
                 else:
                     self.plot_widget_2.setLabel('left', 'Power (dB)',
-                                              **{'font-family': 'Times New Roman', 'font-size': '12pt'})
+                                              **{'font-family': 'Times New Roman', 'font-size': '8pt'})
+
+                # 恢复FFT Spectrum标题（单通道FFT模式）
+                fft_title = '<span style="color: rgb(0,0,139); font-family: Times New Roman; font-size: 9pt">FFT Spectrum</span>'
+                self.plot_widget_2.setLabel('top', fft_title)
         except Exception as e:
             log.warning(f"FFT display error: {e}")
 
@@ -1511,22 +1515,29 @@ class MainWindow(QMainWindow):
                 # 单通道模式
                 averaged_frame = self._compute_averaged_frame(data, point_num)
                 if averaged_frame is not None:
+                    # RAW数据归一化：除以32767转换为电压单位
+                    normalized_frame = averaged_frame.astype(np.float32) / 32767.0
+
                     # 使用缓存的x轴数据，避免重复创建
-                    data_length = len(averaged_frame)
+                    data_length = len(normalized_frame)
                     if data_length not in self._x_axis_cache:
                         self._x_axis_cache[data_length] = np.arange(data_length)
                     x_axis = self._x_axis_cache[data_length]
 
-                    self.plot_curve_1[0].setData(x_axis, averaged_frame)
+                    self.plot_curve_1[0].setData(x_axis, normalized_frame)
                     # 清空其他曲线
                     for i in range(1, 4):
                         self.plot_curve_1[i].setData([])
 
+                    # 设置Y轴标签为电压单位
+                    self.plot_widget_1.setLabel('left', 'Amp. (V)',
+                                              **{'font-family': 'Times New Roman', 'font-size': '8pt'})
+
                     log.debug(f"Single channel: averaged {len(data)//point_num} frames, "
-                             f"display {len(averaged_frame)} points")
+                             f"display {len(normalized_frame)} points, normalized to voltage")
 
                     # 显式删除大数组，帮助垃圾回收
-                    del averaged_frame
+                    del averaged_frame, normalized_frame
 
                 # FFT处理（如果启用且间隔满足）
                 fft_interval = RAW_DATA_CONFIG['fft_update_s']
@@ -1548,37 +1559,51 @@ class MainWindow(QMainWindow):
                 ch0_data = data[:, 0]
                 averaged_frame_ch0 = self._compute_averaged_frame(ch0_data, point_num, single_channel=True)
                 if averaged_frame_ch0 is not None:
+                    # RAW数据归一化：除以32767转换为电压单位
+                    normalized_ch0 = averaged_frame_ch0.astype(np.float32) / 32767.0
+
                     # 生成x轴数据（从0开始）
-                    x_axis = np.arange(len(averaged_frame_ch0))
-                    self.plot_curve_1[0].setData(x_axis, averaged_frame_ch0)
+                    x_axis = np.arange(len(normalized_ch0))
+                    self.plot_curve_1[0].setData(x_axis, normalized_ch0)
                     # 清空其他时域曲线
                     for i in range(1, 4):
                         self.plot_curve_1[i].setData([])
+
+                    # 设置第一个图的Y轴标签为电压单位
+                    self.plot_widget_1.setLabel('left', 'Amp. (V)',
+                                              **{'font-family': 'Times New Roman', 'font-size': '8pt'})
 
                 # 第二通道显示在FFT图位置（plot_widget_2）
                 ch1_data = data[:, 1]
                 averaged_frame_ch1 = self._compute_averaged_frame(ch1_data, point_num, single_channel=True)
                 if averaged_frame_ch1 is not None:
+                    # RAW数据归一化：除以32767转换为电压单位
+                    normalized_ch1 = averaged_frame_ch1.astype(np.float32) / 32767.0
+
                     # 使用缓存的x轴数据
-                    data_length = len(averaged_frame_ch1)
+                    data_length = len(normalized_ch1)
                     if data_length not in self._x_axis_cache:
                         self._x_axis_cache[data_length] = np.arange(data_length)
                     x_axis = self._x_axis_cache[data_length]
 
-                    self.spectrum_curve.setData(x_axis, averaged_frame_ch1)
+                    self.spectrum_curve.setData(x_axis, normalized_ch1)
 
-                    # 设置FFT图为时域显示模式
+                    # 设置FFT图为时域显示模式，移除FFT Spectrum标题
                     self.plot_widget_2.setLogMode(x=False, y=False)
                     self.plot_widget_2.enableAutoRange()
                     self.plot_widget_2.setLabel('bottom', 'Sample Index',
-                                              **{'font-family': 'Times New Roman', 'font-size': '12pt'})
-                    self.plot_widget_2.setLabel('left', 'Amplitude (Channel 2)',
-                                              **{'font-family': 'Times New Roman', 'font-size': '12pt'})
+                                              **{'font-family': 'Times New Roman', 'font-size': '8pt'})
+                    self.plot_widget_2.setLabel('left', 'Amp. (V)',
+                                              **{'font-family': 'Times New Roman', 'font-size': '8pt'})
+
+                    # 移除FFT Spectrum标题，设置为Channel 2
+                    ch2_title = '<span style="color: rgb(0,0,139); font-family: Times New Roman; font-size: 9pt">Channel 2 Raw Data</span>'
+                    self.plot_widget_2.setLabel('top', ch2_title)
 
                     # 清理内存
-                    del averaged_frame_ch1, ch1_data
+                    del averaged_frame_ch1, ch1_data, normalized_ch0, normalized_ch1
 
-                log.debug("Dual channel: ch0 on time domain plot, ch1 on spectrum plot")
+                log.debug("Dual channel: ch0 on time domain plot, ch1 on spectrum plot, both normalized to voltage")
 
             self._last_time_domain_update = current_time
 
@@ -1694,18 +1719,22 @@ class MainWindow(QMainWindow):
                 if data_type == 'int':
                     self.plot_widget_2.setXRange(1.0, nyquist, padding=0.02)
                     self.plot_widget_2.setLabel('bottom', 'Frequency (Hz)',
-                                              **{'font-family': 'Times New Roman', 'font-size': '12pt'})
+                                              **{'font-family': 'Times New Roman', 'font-size': '8pt'})
                 else:
                     self.plot_widget_2.enableAutoRange(axis='x')
                     self.plot_widget_2.setLabel('bottom', 'Frequency (MHz)',
-                                              **{'font-family': 'Times New Roman', 'font-size': '12pt'})
+                                              **{'font-family': 'Times New Roman', 'font-size': '8pt'})
+
+                # 恢复FFT Spectrum标题（单通道FFT模式）
+                fft_title = '<span style="color: rgb(0,0,139); font-family: Times New Roman; font-size: 9pt">FFT Spectrum</span>'
+                self.plot_widget_2.setLabel('top', fft_title)
 
             if psd_mode:
                 self.plot_widget_2.setLabel('left', 'PSD (dB/Hz)',
-                                          **{'font-family': 'Times New Roman', 'font-size': '12pt'})
+                                          **{'font-family': 'Times New Roman', 'font-size': '8pt'})
             else:
                 self.plot_widget_2.setLabel('left', 'Power (dB)',
-                                          **{'font-family': 'Times New Roman', 'font-size': '12pt'})
+                                          **{'font-family': 'Times New Roman', 'font-size': '8pt'})
         except Exception as e:
             log.warning(f"Spectrum update error: {e}")
 
@@ -1776,6 +1805,10 @@ class MainWindow(QMainWindow):
                 log.debug("Dual channel mode: FFT disabled, Ch2 will display on spectrum plot")
             else:
                 log.debug("Single channel mode: FFT available on spectrum plot")
+                # 单通道时恢复FFT Spectrum标题
+                if hasattr(self, 'plot_widget_2'):
+                    fft_title = '<span style="color: rgb(0,0,139); font-family: Times New Roman; font-size: 9pt">FFT Spectrum</span>'
+                    self.plot_widget_2.setLabel('top', fft_title)
 
             # FFT子图始终可见（双通道时用于显示第二通道）
             if hasattr(self, 'plot_widget_2'):
@@ -1784,6 +1817,10 @@ class MainWindow(QMainWindow):
             # Phase数据模式下，重新启用选项
             self.spectrum_enable_check.setEnabled(True)
             self.psd_check.setEnabled(True)
+            # Phase模式下也恢复FFT Spectrum标题
+            if hasattr(self, 'plot_widget_2'):
+                fft_title = '<span style="color: rgb(0,0,139); font-family: Times New Roman; font-size: 9pt">FFT Spectrum</span>'
+                self.plot_widget_2.setLabel('top', fft_title)
 
     def _browse_save_path(self):
         path = QFileDialog.getExistingDirectory(self, "Select Save Directory", self.save_path_edit.text())
