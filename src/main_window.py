@@ -846,10 +846,6 @@ class MainWindow(QMainWindow):
         # Connect rad checkbox to update Y-axis labels for phase data
         self.rad_check.toggled.connect(self._on_rad_toggled)
 
-        # Connect mode radio buttons to update X-axis labels
-        self.mode_time_radio.toggled.connect(self._on_mode_changed)
-        self.mode_space_radio.toggled.connect(self._on_mode_changed)
-
     # ----- DEVICE INIT -----
 
     def _init_device(self):
@@ -1442,9 +1438,8 @@ class MainWindow(QMainWindow):
 
                 # Update Tab1 (traditional plots) only if it's active or if no tabs
                 if current_tab == 0 or current_tab is None:
-                    # SPACE模式使用帧索引作为X轴
-                    x_axis = np.arange(len(space_data))
-                    self.plot_curve_1[0].setData(x_axis, space_data)
+                    # SPACE模式恢复原始形式，不提供X轴数据
+                    self.plot_curve_1[0].setData(space_data)
                     for i in range(1, 4):
                         self.plot_curve_1[i].setData([])
 
@@ -1469,9 +1464,8 @@ class MainWindow(QMainWindow):
                             if idx < len(display_data):
                                 space_data.append(display_data[idx, ch])
                         space_data_array = np.array(space_data)
-                        # SPACE模式使用帧索引作为X轴
-                        x_axis = np.arange(len(space_data_array))
-                        self.plot_curve_1[ch].setData(x_axis, space_data_array)
+                        # SPACE模式恢复原始形式，不提供X轴数据
+                        self.plot_curve_1[ch].setData(space_data_array)
                     for i in range(channel_num, 4):
                         self.plot_curve_1[i].setData([])
 
@@ -1487,9 +1481,8 @@ class MainWindow(QMainWindow):
                         start = i * fbg_num
                         end = start + fbg_num
                         if end <= len(display_data):
-                            # Phase模式使用FBG索引作为X轴
-                            x_axis = np.arange(fbg_num)
-                            self.plot_curve_1[i].setData(x_axis, display_data[start:end])
+                            # Phase模式恢复原始形式，不提供X轴数据
+                            self.plot_curve_1[i].setData(display_data[start:end])
                         else:
                             self.plot_curve_1[i].setData([])
 
@@ -1508,9 +1501,8 @@ class MainWindow(QMainWindow):
                 if current_tab == 0 or current_tab is None:
                     for ch in range(min(channel_num, 4)):
                         if fbg_num <= len(display_data):
-                            # Phase模式使用FBG索引作为X轴
-                            x_axis = np.arange(fbg_num)
-                            self.plot_curve_1[ch].setData(x_axis, display_data[:fbg_num, ch])
+                            # Phase模式恢复原始形式，不提供X轴数据
+                            self.plot_curve_1[ch].setData(display_data[:fbg_num, ch])
 
                 # Update Tab2 if it's active and widget exists
                 if current_tab == 1 and hasattr(self, 'time_space_widget'):
@@ -1851,12 +1843,9 @@ class MainWindow(QMainWindow):
                                       **{'font-family': 'Times New Roman', 'font-size': '8pt'})
 
     def _on_mode_changed(self, checked: bool):
-        """处理Time/Space模式切换，更新X轴标签"""
-        if checked:  # 只响应选中事件，避免重复调用
-            data_source = self.data_source_combo.currentData()
-            if data_source == DataSource.PHASE:
-                # 只有Phase模式才有Time/Space切换
-                self._update_x_axis_labels()
+        """处理Time/Space模式切换"""
+        # Phase模式已恢复原始X轴设置，不需要特殊处理X轴标签
+        pass
 
     def _update_y_axis_labels(self):
         """根据当前数据源和rad设置更新Y轴标签"""
@@ -1876,20 +1865,14 @@ class MainWindow(QMainWindow):
                                   color='k', **{'font-family': 'Times New Roman', 'font-size': '8pt'})
 
     def _update_x_axis_labels(self):
-        """根据当前数据源和显示模式更新X轴标签"""
+        """根据当前数据源更新X轴标签"""
         data_source = self.data_source_combo.currentData()
 
         if data_source in [DataSource.RAW, DataSource.AMPLITUDE]:
             # Raw/Amplitude模式：使用距离单位
             x_label = 'Distance (m)'
-        elif data_source == DataSource.PHASE:
-            # Phase模式：根据显示模式确定X轴标签
-            if hasattr(self.params, 'display') and self.params.display.mode == DisplayMode.SPACE:
-                x_label = 'Frame Index'  # SPACE模式显示时间序列
-            else:
-                x_label = 'FBG Index'    # TIME模式显示FBG位置
         else:
-            # 默认使用采样索引
+            # Phase等其他模式：使用默认的采样索引标签
             x_label = 'Sample Index'
 
         self.plot_widget_1.setLabel('bottom', x_label,
