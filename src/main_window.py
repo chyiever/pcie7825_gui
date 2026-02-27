@@ -754,8 +754,6 @@ class MainWindow(QMainWindow):
                                    color='k', **{'font-family': 'Times New Roman', 'font-size': '8pt'})
         # Initial Y-axis label will be set by _update_y_axis_labels based on data source and rad setting
         self._update_y_axis_labels()
-        # Initial X-axis label will be set by _update_x_axis_labels based on data source
-        self._update_x_axis_labels()
 
         self.plot_widget_2.setLabel('bottom', 'Frequency (Hz)',
                                    color='k', **{'font-family': 'Times New Roman', 'font-size': '8pt'})
@@ -1818,9 +1816,6 @@ class MainWindow(QMainWindow):
         # Update Y-axis labels when data source changes
         self._update_y_axis_labels()
 
-        # Update X-axis labels when data source changes
-        self._update_x_axis_labels()
-
         self._update_calculated_values()
 
     def _on_channel_changed(self, index: int):
@@ -1842,11 +1837,6 @@ class MainWindow(QMainWindow):
             self.plot_widget_1.setLabel('left', y_label,
                                       **{'font-family': 'Times New Roman', 'font-size': '8pt'})
 
-    def _on_mode_changed(self, checked: bool):
-        """处理Time/Space模式切换"""
-        # Phase模式已恢复原始X轴设置，不需要特殊处理X轴标签
-        pass
-
     def _update_y_axis_labels(self):
         """根据当前数据源和rad设置更新Y轴标签"""
         data_source = self.data_source_combo.currentData()
@@ -1862,20 +1852,6 @@ class MainWindow(QMainWindow):
             y_label = 'Amp.'
 
         self.plot_widget_1.setLabel('left', y_label,
-                                  color='k', **{'font-family': 'Times New Roman', 'font-size': '8pt'})
-
-    def _update_x_axis_labels(self):
-        """根据当前数据源更新X轴标签"""
-        data_source = self.data_source_combo.currentData()
-
-        if data_source in [DataSource.RAW, DataSource.AMPLITUDE]:
-            # Raw/Amplitude模式：使用距离单位
-            x_label = 'Distance (m)'
-        else:
-            # Phase等其他模式：使用默认的采样索引标签
-            x_label = 'Sample Index'
-
-        self.plot_widget_1.setLabel('bottom', x_label,
                                   color='k', **{'font-family': 'Times New Roman', 'font-size': '8pt'})
 
     def _update_spectrum_psd_availability(self):
