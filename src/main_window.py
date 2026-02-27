@@ -754,6 +754,8 @@ class MainWindow(QMainWindow):
                                    color='k', **{'font-family': 'Times New Roman', 'font-size': '8pt'})
         # Initial Y-axis label will be set by _update_y_axis_labels based on data source and rad setting
         self._update_y_axis_labels()
+        # Initial X-axis label will be set by _update_x_axis_labels based on data source
+        self._update_x_axis_labels()
 
         self.plot_widget_2.setLabel('bottom', 'Frequency (Hz)',
                                    color='k', **{'font-family': 'Times New Roman', 'font-size': '8pt'})
@@ -843,6 +845,10 @@ class MainWindow(QMainWindow):
 
         # Connect rad checkbox to update Y-axis labels for phase data
         self.rad_check.toggled.connect(self._on_rad_toggled)
+
+        # Connect mode radio buttons to update X-axis labels
+        self.mode_time_radio.toggled.connect(self._on_mode_changed)
+        self.mode_space_radio.toggled.connect(self._on_mode_changed)
 
     # ----- DEVICE INIT -----
 
@@ -1436,7 +1442,9 @@ class MainWindow(QMainWindow):
 
                 # Update Tab1 (traditional plots) only if it's active or if no tabs
                 if current_tab == 0 or current_tab is None:
-                    self.plot_curve_1[0].setData(space_data)
+                    # SPACE模式使用帧索引作为X轴
+                    x_axis = np.arange(len(space_data))
+                    self.plot_curve_1[0].setData(x_axis, space_data)
                     for i in range(1, 4):
                         self.plot_curve_1[i].setData([])
 
@@ -1460,7 +1468,10 @@ class MainWindow(QMainWindow):
                             idx = region_idx + fbg_num * i
                             if idx < len(display_data):
                                 space_data.append(display_data[idx, ch])
-                        self.plot_curve_1[ch].setData(np.array(space_data))
+                        space_data_array = np.array(space_data)
+                        # SPACE模式使用帧索引作为X轴
+                        x_axis = np.arange(len(space_data_array))
+                        self.plot_curve_1[ch].setData(x_axis, space_data_array)
                     for i in range(channel_num, 4):
                         self.plot_curve_1[i].setData([])
 
@@ -1476,7 +1487,9 @@ class MainWindow(QMainWindow):
                         start = i * fbg_num
                         end = start + fbg_num
                         if end <= len(display_data):
-                            self.plot_curve_1[i].setData(display_data[start:end])
+                            # Phase模式使用FBG索引作为X轴
+                            x_axis = np.arange(fbg_num)
+                            self.plot_curve_1[i].setData(x_axis, display_data[start:end])
                         else:
                             self.plot_curve_1[i].setData([])
 
@@ -1495,7 +1508,9 @@ class MainWindow(QMainWindow):
                 if current_tab == 0 or current_tab is None:
                     for ch in range(min(channel_num, 4)):
                         if fbg_num <= len(display_data):
-                            self.plot_curve_1[ch].setData(display_data[:fbg_num, ch])
+                            # Phase模式使用FBG索引作为X轴
+                            x_axis = np.arange(fbg_num)
+                            self.plot_curve_1[ch].setData(x_axis, display_data[:fbg_num, ch])
 
                 # Update Tab2 if it's active and widget exists
                 if current_tab == 1 and hasattr(self, 'time_space_widget'):
@@ -1530,11 +1545,13 @@ class MainWindow(QMainWindow):
                     # RAW数据归一化：除以32767转换为电压单位
                     normalized_frame = averaged_frame.astype(np.float32) / 32767.0
 
-                    # 使用缓存的x轴数据，避免重复创建
+                    # RAW数据使用距离轴（米为单位）
                     data_length = len(normalized_frame)
-                    if data_length not in self._x_axis_cache:
-                        self._x_axis_cache[data_length] = np.arange(data_length)
-                    x_axis = self._x_axis_cache[data_length]
+                    distance_key = f"dist_{data_length}"
+                    if distance_key not in self._x_axis_cache:
+                        # X轴从采样点索引转换为距离：除以10
+                        self._x_axis_cache[distance_key] = np.arange(data_length) / 10.0
+                    x_axis = self._x_axis_cache[distance_key]
 
                     self.plot_curve_1[0].setData(x_axis, normalized_frame)
                     # 清空其他曲线
@@ -1543,6 +1560,10 @@ class MainWindow(QMainWindow):
 
                     # 设置Y轴标签为电压单位
                     self.plot_widget_1.setLabel('left', 'Amp. (V)',
+                                              **{'font-family': 'Times New Roman', 'font-size': '8pt'})
+
+                    # 设置X轴标签为距离单位
+                    self.plot_widget_1.setLabel('bottom', 'Distance (m)',
                                               **{'font-family': 'Times New Roman', 'font-size': '8pt'})
 
                     log.debug(f"Single channel: averaged {len(data)//point_num} frames, "
@@ -1574,8 +1595,14 @@ class MainWindow(QMainWindow):
                     # RAW数据归一化：除以32767转换为电压单位
                     normalized_ch0 = averaged_frame_ch0.astype(np.float32) / 32767.0
 
-                    # 生成x轴数据（从0开始）
-                    x_axis = np.arange(len(normalized_ch0))
+                    # RAW数据使用距离轴（米为单位）
+                    data_length = len(normalized_ch0)
+                    distance_key = f"dist_{data_length}"
+                    if distance_key not in self._x_axis_cache:
+                        # X轴从采样点索引转换为距离：除以10
+                        self._x_axis_cache[distance_key] = np.arange(data_length) / 10.0
+                    x_axis = self._x_axis_cache[distance_key]
+
                     self.plot_curve_1[0].setData(x_axis, normalized_ch0)
                     # 清空其他时域曲线
                     for i in range(1, 4):
@@ -1585,6 +1612,10 @@ class MainWindow(QMainWindow):
                     self.plot_widget_1.setLabel('left', 'Amp. (V)',
                                               **{'font-family': 'Times New Roman', 'font-size': '8pt'})
 
+                    # 设置X轴标签为距离单位
+                    self.plot_widget_1.setLabel('bottom', 'Distance (m)',
+                                              **{'font-family': 'Times New Roman', 'font-size': '8pt'})
+
                 # 第二通道显示在FFT图位置（plot_widget_2）
                 ch1_data = data[:, 1]
                 averaged_frame_ch1 = self._compute_averaged_frame(ch1_data, point_num, single_channel=True)
@@ -1592,18 +1623,20 @@ class MainWindow(QMainWindow):
                     # RAW数据归一化：除以32767转换为电压单位
                     normalized_ch1 = averaged_frame_ch1.astype(np.float32) / 32767.0
 
-                    # 使用缓存的x轴数据
+                    # RAW数据使用距离轴（米为单位），与第一通道共享相同的缓存
                     data_length = len(normalized_ch1)
-                    if data_length not in self._x_axis_cache:
-                        self._x_axis_cache[data_length] = np.arange(data_length)
-                    x_axis = self._x_axis_cache[data_length]
+                    distance_key = f"dist_{data_length}"
+                    if distance_key not in self._x_axis_cache:
+                        # X轴从采样点索引转换为距离：除以10
+                        self._x_axis_cache[distance_key] = np.arange(data_length) / 10.0
+                    x_axis = self._x_axis_cache[distance_key]
 
                     self.spectrum_curve.setData(x_axis, normalized_ch1)
 
                     # 设置FFT图为时域显示模式，移除FFT Spectrum标题
                     self.plot_widget_2.setLogMode(x=False, y=False)
                     self.plot_widget_2.enableAutoRange()
-                    self.plot_widget_2.setLabel('bottom', 'Sample Index',
+                    self.plot_widget_2.setLabel('bottom', 'Distance (m)',
                                               **{'font-family': 'Times New Roman', 'font-size': '8pt'})
                     self.plot_widget_2.setLabel('left', 'Amp. (V)',
                                               **{'font-family': 'Times New Roman', 'font-size': '8pt'})
@@ -1793,6 +1826,9 @@ class MainWindow(QMainWindow):
         # Update Y-axis labels when data source changes
         self._update_y_axis_labels()
 
+        # Update X-axis labels when data source changes
+        self._update_x_axis_labels()
+
         self._update_calculated_values()
 
     def _on_channel_changed(self, index: int):
@@ -1814,6 +1850,14 @@ class MainWindow(QMainWindow):
             self.plot_widget_1.setLabel('left', y_label,
                                       **{'font-family': 'Times New Roman', 'font-size': '8pt'})
 
+    def _on_mode_changed(self, checked: bool):
+        """处理Time/Space模式切换，更新X轴标签"""
+        if checked:  # 只响应选中事件，避免重复调用
+            data_source = self.data_source_combo.currentData()
+            if data_source == DataSource.PHASE:
+                # 只有Phase模式才有Time/Space切换
+                self._update_x_axis_labels()
+
     def _update_y_axis_labels(self):
         """根据当前数据源和rad设置更新Y轴标签"""
         data_source = self.data_source_combo.currentData()
@@ -1829,6 +1873,26 @@ class MainWindow(QMainWindow):
             y_label = 'Amp.'
 
         self.plot_widget_1.setLabel('left', y_label,
+                                  color='k', **{'font-family': 'Times New Roman', 'font-size': '8pt'})
+
+    def _update_x_axis_labels(self):
+        """根据当前数据源和显示模式更新X轴标签"""
+        data_source = self.data_source_combo.currentData()
+
+        if data_source in [DataSource.RAW, DataSource.AMPLITUDE]:
+            # Raw/Amplitude模式：使用距离单位
+            x_label = 'Distance (m)'
+        elif data_source == DataSource.PHASE:
+            # Phase模式：根据显示模式确定X轴标签
+            if hasattr(self.params, 'display') and self.params.display.mode == DisplayMode.SPACE:
+                x_label = 'Frame Index'  # SPACE模式显示时间序列
+            else:
+                x_label = 'FBG Index'    # TIME模式显示FBG位置
+        else:
+            # 默认使用采样索引
+            x_label = 'Sample Index'
+
+        self.plot_widget_1.setLabel('bottom', x_label,
                                   color='k', **{'font-family': 'Times New Roman', 'font-size': '8pt'})
 
     def _update_spectrum_psd_availability(self):
