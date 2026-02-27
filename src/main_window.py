@@ -1060,18 +1060,28 @@ class MainWindow(QMainWindow):
             curve.setData([])
         self.spectrum_curve.setData([])
 
-        # Plot 1: CH0 amplitude + peak markers
-        self.plot_curve_1[0].setData(ch0_amp[:point_num].astype(np.float32))
+        # 创建距离轴（与RAW数据一致）
+        distance_x_axis = np.arange(point_num) / 10.0  # 转换为距离(米)
+
+        # Plot 1: CH0 amplitude + peak markers with distance X-axis
+        self.plot_curve_1[0].setData(distance_x_axis, ch0_amp[:point_num].astype(np.float32))
 
         # Scale peak info for visibility
         peak_markers = ch0_info[:point_num].astype(np.float32) * 10000
-        self.plot_curve_1[1].setData(peak_markers)
+        self.plot_curve_1[1].setData(distance_x_axis, peak_markers)
 
         if channel_num == 2:
-            # Plot 2: CH1 amplitude + peak markers
-            self.plot_curve_1[2].setData(ch1_amp[:point_num].astype(np.float32))
+            # Plot 2: CH1 amplitude + peak markers with distance X-axis
+            self.plot_curve_1[2].setData(distance_x_axis, ch1_amp[:point_num].astype(np.float32))
             peak_markers_1 = ch1_info[:point_num].astype(np.float32) * 10000
-            self.plot_curve_1[3].setData(peak_markers_1)
+            self.plot_curve_1[3].setData(distance_x_axis, peak_markers_1)
+
+        # 设置X轴标签为距离单位
+        self.plot_widget_1.setLabel('bottom', 'Distance (m)',
+                                  **{'font-family': 'Times New Roman', 'font-size': '8pt'})
+        # 设置Y轴标签为振幅单位（保持原始振幅值，不归一化）
+        self.plot_widget_1.setLabel('left', 'Amplitude',
+                                  **{'font-family': 'Times New Roman', 'font-size': '8pt'})
 
     def _save_peak_info_file(self, ch0_info, ch0_amp, ch1_info, ch1_amp):
         """Save peak info to binary file."""
