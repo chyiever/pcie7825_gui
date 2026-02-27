@@ -122,6 +122,7 @@ class AcquisitionThread(QThread):
                 self._mutex.unlock()
 
                 if not self._running:
+                    log.info("Main loop: _running is False, breaking")
                     break
 
                 # Determine expected data size based on data source
@@ -208,6 +209,11 @@ class AcquisitionThread(QThread):
 
     def _on_demand_sampling_step(self):
         """RAW数据按需采样处理"""
+        # 首先检查线程是否应该继续运行
+        if not self._running:
+            log.debug("_on_demand_sampling_step: _running is False, returning")
+            return
+
         current_time = time.time()
 
         # 检查是否需要时域图采样
@@ -225,15 +231,23 @@ class AcquisitionThread(QThread):
             time.sleep(0.1)  # 100ms休眠，减少CPU占用
             return
 
+        # 再次检查运行状态（在休眠后）
+        if not self._running:
+            log.debug("_on_demand_sampling_step: _running is False after sleep, returning")
+            return
+
         # 执行采样
         if need_time_domain:
             self._sample_for_time_domain(current_time)
 
-        if need_fft:
+        if need_fft and self._running:  # 在FFT采样前也检查运行状态
             self._sample_for_fft(current_time)
 
     def _sample_for_time_domain(self, current_time):
         """采样用于时域图显示"""
+        if not self._running:  # 检查运行状态
+            return
+
         frames_needed = RAW_SAMPLING_CONFIG['time_domain_frames']
         points_needed = self._total_point_num * frames_needed
 
@@ -241,6 +255,10 @@ class AcquisitionThread(QThread):
 
         # 等待足够的数据
         if not self._wait_for_data(points_needed):
+            return
+
+        # 再次检查运行状态（在等待数据后）
+        if not self._running:
             return
 
         # 读取数据
@@ -267,6 +285,9 @@ class AcquisitionThread(QThread):
 
     def _sample_for_fft(self, current_time):
         """采样用于FFT计算"""
+        if not self._running:  # 检查运行状态
+            return
+
         frames_needed = RAW_SAMPLING_CONFIG['fft_frames']
         points_needed = self._total_point_num * frames_needed
 
@@ -274,6 +295,10 @@ class AcquisitionThread(QThread):
 
         # 等待足够的数据
         if not self._wait_for_data(points_needed):
+            return
+
+        # 再次检查运行状态（在等待数据后）
+        if not self._running:
             return
 
         # 读取数据
@@ -447,13 +472,15 @@ class AcquisitionThread(QThread):
             self._current_polling_interval = self._low_freq_interval
 
     def stop(self):
-        log.info("Stop requested")
+        log.info("Stop requested - setting _running to False")
         self._running = False
 
         self._mutex.lock()
         self._paused = False
         self._pause_condition.wakeAll()
         self._mutex.unlock()
+
+        log.info(f"Thread is running: {self.isRunning()}")
 
         # Force terminate if thread doesn't stop gracefully
         if self.isRunning():
@@ -462,6 +489,7 @@ class AcquisitionThread(QThread):
                 log.warning("Thread did not finish in 1 second! Force terminating...")
                 self.terminate()
                 self.wait(500)  # 给terminate一些时间
+                log.info("Thread terminated")
 
     def pause(self):
         self._mutex.lock()

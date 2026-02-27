@@ -752,8 +752,8 @@ class MainWindow(QMainWindow):
         # Set specific labels for each plot
         self.plot_widget_1.setLabel('bottom', 'Sample Index',
                                    color='k', **{'font-family': 'Times New Roman', 'font-size': '8pt'})
-        self.plot_widget_1.setLabel('left', 'Amp.',
-                                   color='k', **{'font-family': 'Times New Roman', 'font-size': '8pt'})
+        # Initial Y-axis label will be set by _update_y_axis_labels based on data source and rad setting
+        self._update_y_axis_labels()
 
         self.plot_widget_2.setLabel('bottom', 'Frequency (Hz)',
                                    color='k', **{'font-family': 'Times New Roman', 'font-size': '8pt'})
@@ -840,6 +840,9 @@ class MainWindow(QMainWindow):
         self.point_num_spin.valueChanged.connect(self._update_calculated_values)
         self.scan_rate_spin.valueChanged.connect(self._update_calculated_values)
         self.frames_per_file_spin.valueChanged.connect(self._update_file_estimates)
+
+        # Connect rad checkbox to update Y-axis labels for phase data
+        self.rad_check.toggled.connect(self._on_rad_toggled)
 
     # ----- DEVICE INIT -----
 
@@ -1382,7 +1385,7 @@ class MainWindow(QMainWindow):
                                           **{'font-family': 'Times New Roman', 'font-size': '8pt'})
 
                 if self.params.display.psd_enable:
-                    self.plot_widget_2.setLabel('left', 'PSD (dB/Hz)',
+                    self.plot_widget_2.setLabel('left', 'PSD (dB)',
                                               **{'font-family': 'Times New Roman', 'font-size': '8pt'})
                 else:
                     self.plot_widget_2.setLabel('left', 'Power (dB)',
@@ -1407,6 +1410,15 @@ class MainWindow(QMainWindow):
         display_data = data
         if self.params.display.rad_enable:
             display_data = data.astype(np.float64) / 32767.0 * np.pi
+
+        # 动态设置Phase模式的Y轴标签
+        if self.params.display.rad_enable:
+            y_label = 'Amp. (rad)'
+        else:
+            y_label = 'Amp.'
+
+        self.plot_widget_1.setLabel('left', y_label,
+                                  **{'font-family': 'Times New Roman', 'font-size': '8pt'})
 
         # Check which tab is currently active for performance optimization
         current_tab = self.plot_tabs.currentIndex() if hasattr(self, 'plot_tabs') else 0
@@ -1730,7 +1742,7 @@ class MainWindow(QMainWindow):
                 self.plot_widget_2.setLabel('top', fft_title)
 
             if psd_mode:
-                self.plot_widget_2.setLabel('left', 'PSD (dB/Hz)',
+                self.plot_widget_2.setLabel('left', 'PSD (dB)',
                                           **{'font-family': 'Times New Roman', 'font-size': '8pt'})
             else:
                 self.plot_widget_2.setLabel('left', 'Power (dB)',
@@ -1778,6 +1790,9 @@ class MainWindow(QMainWindow):
         # 重新评估spectrum和PSD选项的可用性
         self._update_spectrum_psd_availability()
 
+        # Update Y-axis labels when data source changes
+        self._update_y_axis_labels()
+
         self._update_calculated_values()
 
     def _on_channel_changed(self, index: int):
@@ -1785,6 +1800,36 @@ class MainWindow(QMainWindow):
         # 重新评估spectrum和PSD选项的可用性
         self._update_spectrum_psd_availability()
         self._update_calculated_values()
+
+    def _on_rad_toggled(self, checked: bool):
+        """处理rad复选框切换，实时更新Phase数据的Y轴标签"""
+        data_source = self.data_source_combo.currentData()
+        if data_source == DataSource.PHASE:
+            # 只有在Phase模式下才更新Y轴标签
+            if checked:
+                y_label = 'Amp. (rad)'
+            else:
+                y_label = 'Amp.'
+
+            self.plot_widget_1.setLabel('left', y_label,
+                                      **{'font-family': 'Times New Roman', 'font-size': '8pt'})
+
+    def _update_y_axis_labels(self):
+        """根据当前数据源和rad设置更新Y轴标签"""
+        data_source = self.data_source_combo.currentData()
+
+        if data_source == DataSource.PHASE:
+            # Phase模式：根据rad_enable设置标签
+            if self.rad_check.isChecked():
+                y_label = 'Amp. (rad)'
+            else:
+                y_label = 'Amp.'
+        else:
+            # Raw/Amplitude模式：使用电压单位（将在实际显示时设置）
+            y_label = 'Amp.'
+
+        self.plot_widget_1.setLabel('left', y_label,
+                                  color='k', **{'font-family': 'Times New Roman', 'font-size': '8pt'})
 
     def _update_spectrum_psd_availability(self):
         """更新spectrum和PSD选项的可用性"""

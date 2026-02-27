@@ -199,7 +199,12 @@ class WFBG7825API:
 
         # int wfbg7825_point_num_per_ch_in_buf_query(uint* p_point_num_in_buf_per_ch)
         self.dll.wfbg7825_point_num_per_ch_in_buf_query.restype = ctypes.c_int
-        self.dll.wfbg7825_point_num_per_ch_in_buf_query.argtypes = [ctypes.POINTER(ctypes.c_uint)]
+        # 使用灵活的参数类型定义，支持多种无符号整型
+        try:
+            from ctypes import wintypes
+            self.dll.wfbg7825_point_num_per_ch_in_buf_query.argtypes = [ctypes.POINTER(wintypes.DWORD)]
+        except ImportError:
+            self.dll.wfbg7825_point_num_per_ch_in_buf_query.argtypes = [ctypes.POINTER(ctypes.c_uint)]
 
         # int wfbg7825_read_data(uint point_num_per_ch, short* p_data, uint* p_returned)
         self.dll.wfbg7825_read_data.restype = ctypes.c_int
@@ -417,16 +422,49 @@ class WFBG7825API:
 
     def query_buffer_points(self) -> int:
         """Query number of points per channel in buffer."""
-        point_num = ctypes.c_uint()
-        with self._lock:
-            start = time.perf_counter()
-            self.dll.wfbg7825_point_num_per_ch_in_buf_query(ctypes.byref(point_num))
-            elapsed = (time.perf_counter() - start) * 1000
+        try:
+            # 使用wintypes中的DWORD类型，在Windows上更稳定
+            from ctypes import wintypes
+            point_num = wintypes.DWORD()
+            log.debug(f"Created point_num: {point_num}, type: {type(point_num)}")
 
-        if elapsed > 10:
-            log.warning(f"query_buffer_points took {elapsed:.1f} ms, points={point_num.value}")
+            with self._lock:
+                start = time.perf_counter()
+                result = self.dll.wfbg7825_point_num_per_ch_in_buf_query(ctypes.byref(point_num))
+                elapsed = (time.perf_counter() - start) * 1000
 
-        return point_num.value
+            if elapsed > 10:
+                log.warning(f"query_buffer_points took {elapsed:.1f} ms, points={point_num.value}")
+
+            # 检查API调用结果
+            if result != 0:
+                log.warning(f"query_buffer_points returned error code: {result}")
+                return 0
+
+            return point_num.value
+
+        except ImportError:
+            # 如果wintypes不可用，回退到原始方法
+            log.debug("wintypes not available, using c_uint")
+            point_num = ctypes.c_uint()
+
+            with self._lock:
+                start = time.perf_counter()
+                result = self.dll.wfbg7825_point_num_per_ch_in_buf_query(ctypes.byref(point_num))
+                elapsed = (time.perf_counter() - start) * 1000
+
+            if elapsed > 10:
+                log.warning(f"query_buffer_points took {elapsed:.1f} ms, points={point_num.value}")
+
+            if result != 0:
+                log.warning(f"query_buffer_points returned error code: {result}")
+                return 0
+
+            return point_num.value
+
+        except Exception as e:
+            log.error(f"query_buffer_points error details: {e}, type: {type(e)}")
+            return 0
 
     def allocate_buffers(self, point_num: int, channel_num: int, frame_num: int,
                          fbg_num_per_ch: int = 0):
