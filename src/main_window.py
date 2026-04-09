@@ -17,6 +17,7 @@ import gc  # 垃圾回收
 import numpy as np
 import psutil
 import shutil
+from pathlib import Path
 from typing import Optional
 from PyQt5.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
@@ -39,11 +40,11 @@ from config import (
 )
 from wfbg7825_api import WFBG7825API, WFBG7825Error
 from acquisition_thread import AcquisitionThread, SimulatedAcquisitionThread
-from data_saver import FrameBasedFileSaver
 from spectrum_analyzer import RealTimeSpectrumAnalyzer
 from fft_worker import FFTWorkerThread
 from time_space_plot import TimeSpacePlotWidget
 from logger import get_logger
+from storage import StorageManager, StorageSessionConfig
 
 log = get_logger("gui")
 
@@ -58,9 +59,11 @@ class MainWindow(QMainWindow):
 
         self.api: Optional[WFBG7825API] = None
         self.acq_thread: Optional[AcquisitionThread] = None
-        self.data_saver: Optional[FrameBasedFileSaver] = None
+        self.storage_manager: Optional[StorageManager] = None
         self.spectrum_analyzer = RealTimeSpectrumAnalyzer()
         self.fft_worker = FFTWorkerThread(self)  # 新增FFT工作线程
+        self._stop_in_progress = False
+        self._fft_worker_signals_connected = False
 
         self.params = AllParams()
 
@@ -101,6 +104,8 @@ class MainWindow(QMainWindow):
         self._setup_plots()
         self._setup_time_space_widget()
         self._connect_signals()
+        self._on_data_source_changed(self.data_source_combo.currentIndex())
+        self._on_time_domain_toggled(True)
 
         self._status_timer = QTimer(self)
         self._status_timer.timeout.connect(self._update_status)
@@ -178,7 +183,7 @@ class MainWindow(QMainWindow):
             logo_label.setText("[LOGO]")
         layout.addWidget(logo_label)
 
-        title_label = QLabel("\u5206\u5e03\u5f0f\u5149\u7ea4\u58f0\u7eb9\u4f20\u611f\u7cfb\u7edf\uff08eDAS\uff09")
+        title_label = QLabel("\u5206\u5e03\u5f0f\u5149\u7ea4\u58f0\u7eb9\u4f20\u611f\u6a21\u5757\uff08eDAS\uff09")
         title_font = QFont("SimHei", 28, QFont.Bold)
         title_label.setFont(title_font)
         title_label.setAlignment(Qt.AlignCenter)
@@ -332,7 +337,7 @@ class MainWindow(QMainWindow):
         self.data_source_combo = QComboBox()
         for label, value in DATA_SOURCE_OPTIONS:
             self.data_source_combo.addItem(label, value)
-        self.data_source_combo.setCurrentIndex(2)  # Default Phase
+        self.data_source_combo.setCurrentIndex(0)  # Default Raw
         self.data_source_combo.setMinimumHeight(INPUT_MIN_HEIGHT)
         self.data_source_combo.setMaximumWidth(INPUT_MAX_WIDTH)  # Align with other inputs
         upload_layout.addWidget(self.data_source_combo, 0, 1)
@@ -354,12 +359,13 @@ class MainWindow(QMainWindow):
         phase_layout.setContentsMargins(8, 12, 8, 8)
 
         self.polar_div_check = QCheckBox("Polarization Diversity")
+        self.polar_div_check.setChecked(True)
         phase_layout.addWidget(self.polar_div_check, 0, 0, 1, 2)
 
         phase_layout.addWidget(QLabel("Detrend(Hz):"), 0, 2)
         self.detrend_bw_spin = QDoubleSpinBox()
         self.detrend_bw_spin.setRange(0.0, 10000.0)
-        self.detrend_bw_spin.setValue(0.5)
+        self.detrend_bw_spin.setValue(10.0)
         self.detrend_bw_spin.setSingleStep(0.1)
         self.detrend_bw_spin.setMinimumHeight(INPUT_MIN_HEIGHT)
         self.detrend_bw_spin.setMaximumWidth(INPUT_MAX_WIDTH)
@@ -489,8 +495,12 @@ class MainWindow(QMainWindow):
         self.frame_num_spin.setMaximumWidth(INPUT_MAX_WIDTH)
         display_layout.addWidget(self.frame_num_spin, 1, 1)
 
+        self.time_domain_enable_check = QCheckBox("Time Domain")
+        self.time_domain_enable_check.setChecked(True)
+        display_layout.addWidget(self.time_domain_enable_check, 2, 2)
+
         self.spectrum_enable_check = QCheckBox("Spectrum")
-        self.spectrum_enable_check.setChecked(True)
+        self.spectrum_enable_check.setChecked(False)
         display_layout.addWidget(self.spectrum_enable_check, 1, 2)
 
         self.psd_check = QCheckBox("PSD")
@@ -499,7 +509,7 @@ class MainWindow(QMainWindow):
         # Add rad checkbox on second row
         self.rad_check = QCheckBox("rad")
         self.rad_check.setChecked(self.params.display.rad_enable)
-        self.rad_check.setToolTip("Convert phase data to radians for display (/ 32767 * π)")
+        self.rad_check.setToolTip("Convert phase data to radians for display (/ 32767 * pi)")
         display_layout.addWidget(self.rad_check, 2, 0)
 
         layout.addWidget(display_group)
@@ -843,6 +853,7 @@ class MainWindow(QMainWindow):
 
         # Connect rad checkbox to update Y-axis labels for phase data
         self.rad_check.toggled.connect(self._on_rad_toggled)
+        self.time_domain_enable_check.toggled.connect(self._on_time_domain_toggled)
 
     # ----- DEVICE INIT -----
 
@@ -1119,27 +1130,19 @@ class MainWindow(QMainWindow):
             if not self._configure_device(params):
                 return
 
-            # Peak detection logic optimization:
+            # Peak detection rules:
             # 1. Raw/Amplitude mode: no peak detection needed
-            # 2. Phase mode: only if not already done
+            # 2. Phase mode: user must run peak detection manually before start
             log.info(f"DEBUG: data_source={params.upload.data_source}, DataSource.PHASE={DataSource.PHASE}, peak_done={self._peak_detection_done}")
             if params.upload.data_source == DataSource.PHASE and not self._peak_detection_done:
-                log.info("Phase mode: Running peak detection (required for phase data sizing)...")
-                try:
-                    (ch0_cnt, ch0_info, ch0_amp,
-                     ch1_cnt, ch1_info, ch1_amp) = self.api.get_peak_info(
-                        params.peak_detection.amp_base_line,
-                        params.peak_detection.fbg_interval_m,
-                        params.basic.point_num_per_scan
-                    )
-                    self._ch0_peak_info = ch0_info
-                    self._ch1_peak_info = ch1_info
-                    self.ch0_peak_label.setText(str(ch0_cnt))
-                    self.ch1_peak_label.setText(str(ch1_cnt))
-                    self._peak_detection_done = True
-                except WFBG7825Error as e:
-                    QMessageBox.critical(self, "Error", f"Peak detection failed: {e}")
-                    return
+                log.warning("Phase mode start blocked: peak detection has not been run manually")
+                QMessageBox.warning(
+                    self,
+                    "Peak Detection Required",
+                    "Phase mode requires manual peak detection before Start.\n"
+                    "Please click 'Get Peak Info' first, then Start again."
+                )
+                return
             elif params.upload.data_source != DataSource.PHASE:
                 log.info("Raw/Amplitude mode: Skipping peak detection (not required)")
                 # Set default fbg_num for non-phase modes (not actually used)
@@ -1185,20 +1188,16 @@ class MainWindow(QMainWindow):
                  f"channels={params.upload.channel_num}, data_source={params.upload.data_source}, "
                  f"fbg_num={self._fbg_num_per_ch}, frames={params.display.frame_num}")
 
-        # Start data saver
-        if params.save.enable:
-            self.data_saver = FrameBasedFileSaver(
-                params.save.path,
-                frames_per_file=params.save.frames_per_file,
-                buffer_size=OPTIMIZED_BUFFER_SIZES['storage_queue_frames']
-            )
-            filename = self.data_saver.start(
-                scan_rate=params.basic.scan_rate,
-                points_per_frame=self._fbg_num_per_ch
-            )
-            self.save_status_label.setText(f"Save: {filename}")
-        else:
-            self.save_status_label.setText("Save: Off")
+        try:
+            self._start_storage_session(params)
+        except Exception as e:
+            if not self.simulation_mode and self.api is not None:
+                try:
+                    self.api.stop()
+                except Exception:
+                    pass
+            QMessageBox.critical(self, "Error", f"Failed to start storage session: {e}")
+            return
 
         # Reset counters
         self._data_count = 0
@@ -1214,6 +1213,7 @@ class MainWindow(QMainWindow):
             self.acq_thread = AcquisitionThread(self.api, self)
 
         self.acq_thread.configure(params, self._fbg_num_per_ch)
+        self.acq_thread.set_storage_manager(self.storage_manager)
 
         self.acq_thread.phase_data_ready.connect(self._on_phase_data)
         self.acq_thread.data_ready.connect(self._on_raw_data)
@@ -1222,9 +1222,10 @@ class MainWindow(QMainWindow):
         self.acq_thread.error_occurred.connect(self._on_error)
         self.acq_thread.acquisition_stopped.connect(self._on_acquisition_stopped)
 
-        # 连接FFT工作线程信号
-        self.fft_worker.fft_ready.connect(self._on_fft_ready)
-        self.fft_worker.error_occurred.connect(self._on_fft_error)
+        if not self._fft_worker_signals_connected:
+            self.fft_worker.fft_ready.connect(self._on_fft_ready)
+            self.fft_worker.error_occurred.connect(self._on_fft_error)
+            self._fft_worker_signals_connected = True
 
         self.acq_thread.start()
 
@@ -1232,6 +1233,7 @@ class MainWindow(QMainWindow):
         self._set_stop_btn_enabled()
         self._set_params_enabled(False)
         self.spectrum_analyzer.reset()
+        self._stop_in_progress = False
 
         log.info("Acquisition started successfully")
 
@@ -1239,21 +1241,63 @@ class MainWindow(QMainWindow):
     def _on_stop(self):
         log.info("=== STOP button clicked ===")
 
+        if self._stop_in_progress:
+            return
+
+        self._stop_in_progress = True
         self.stop_btn.setEnabled(False)
         self.stop_btn.setText("Stopping...")
+        self._stop_runtime_components()
+        self.stop_btn.setText("STOP")
+        self._set_start_btn_ready()
+        self._set_stop_btn_disabled()
+        self._set_params_enabled(True)
+        self._stop_in_progress = False
 
-        # 使用QTimer实现超时强制停止
-        def force_stop_ui():
-            log.warning("Force stopping - timeout reached")
-            self._set_start_btn_ready()
-            self._set_stop_btn_disabled()
-            self._set_params_enabled(True)
-            self.stop_btn.setText("STOP")
+    @pyqtSlot()
+    def _on_acquisition_stopped(self):
+        log.info("Acquisition stopped signal received")
 
-        # 2秒后强制恢复UI（防止卡死）
-        QTimer.singleShot(2000, force_stop_ui)
+    def _start_storage_session(self, params: AllParams):
+        """Create a dedicated storage session before acquisition starts."""
 
-        # 1. 首先停止硬件采集 - 这会中断阻塞的read_data调用
+        self.storage_manager = None
+
+        if not params.save.enable:
+            self.save_status_label.setText("Save: Off")
+            return
+
+        points_per_frame = (
+            self._fbg_num_per_ch
+            if params.upload.data_source == DataSource.PHASE
+            else params.basic.point_num_per_scan
+        )
+        dtype_name = "int32" if params.upload.data_source == DataSource.PHASE else "int16"
+        storage_chunk_frames = max(1, min(params.basic.scan_rate, params.display.frame_num))
+        target_frames_per_file = max(1, params.display.frame_num * params.save.frames_per_file)
+        blocks_per_file = max(1, (target_frames_per_file + storage_chunk_frames - 1) // storage_chunk_frames)
+        config = StorageSessionConfig(
+            save_path=Path(params.save.path),
+            scan_rate=params.basic.scan_rate,
+            points_per_frame=points_per_frame,
+            channel_count=params.upload.channel_num,
+            data_source=params.upload.data_source,
+            frames_per_block=storage_chunk_frames,
+            blocks_per_file=blocks_per_file,
+            target_frames_per_file=target_frames_per_file,
+            queue_maxsize=OPTIMIZED_BUFFER_SIZES['storage_queue_frames'],
+            dtype_name=dtype_name,
+            file_prefix=params.save.file_prefix,
+        )
+
+        manager = StorageManager()
+        manager.start_session(config)
+        self.storage_manager = manager
+        self.save_status_label.setText(f"Save: #1 0/{blocks_per_file}")
+
+    def _stop_runtime_components(self):
+        """Stop acquisition, FFT, and storage in a deterministic order."""
+
         if not self.simulation_mode and self.api is not None:
             try:
                 log.info("Stopping hardware acquisition...")
@@ -1261,31 +1305,27 @@ class MainWindow(QMainWindow):
             except Exception as e:
                 log.warning(f"Error stopping device: {e}")
 
-        # 2. 然后停止采集线程
         if self.acq_thread is not None:
             log.info("Stopping acquisition thread...")
             self.acq_thread.stop()
+            self.acq_thread = None
 
-        # 3. 停止FFT工作线程
         if self.fft_worker is not None:
             self.fft_worker.stop()
 
-        # 4. 停止数据保存
-        if self.data_saver is not None:
+        if self.storage_manager is not None:
             try:
-                self.data_saver.stop()
+                log.info("Stopping storage worker...")
+                if not self.storage_manager.stop(timeout_s=30.0):
+                    QMessageBox.warning(self, "Warning", "Storage worker did not stop within 30 seconds.")
+                stats = self.storage_manager.snapshot_stats()
+                if stats.last_error:
+                    log.warning(f"Storage worker last error: {stats.last_error}")
             except Exception as e:
-                log.warning(f"Error stopping data saver: {e}")
-            self.data_saver = None
+                log.warning(f"Error stopping storage worker: {e}")
+            self.storage_manager = None
 
         self.save_status_label.setText("Save: Off")
-        self.stop_btn.setText("STOP")
-
-    @pyqtSlot()
-    def _on_acquisition_stopped(self):
-        self._set_start_btn_ready()
-        self._set_stop_btn_disabled()
-        self._set_params_enabled(True)
 
     def _set_params_enabled(self, enabled: bool):
         for widget in [self.clk_internal_radio, self.clk_external_radio,
@@ -1303,12 +1343,6 @@ class MainWindow(QMainWindow):
     def _on_phase_data(self, data: np.ndarray, channel_num: int):
         self._data_count += 1
 
-        if self.data_saver is not None and self.data_saver.is_running:
-            self.data_saver.save_frame(data)
-            if self._data_count % 20 == 0:
-                frame_info = f"{self.data_saver.frame_count}/{self.data_saver.frames_per_file}"
-                self.save_status_label.setText(f"Save: #{self.data_saver.file_no} {frame_info}")
-
         try:
             self._update_phase_display(data, channel_num)
             self._gui_update_count += 1
@@ -1324,10 +1358,6 @@ class MainWindow(QMainWindow):
         """
         self._data_count += 1
         self._raw_data_count += 1
-
-        # 数据保存（如果启用）
-        if self.data_saver is not None and self.data_saver.is_running:
-            self.data_saver.save_frame(data)
 
         # 使用新的显示更新逻辑（内部有间隔控制）
         try:
@@ -1357,6 +1387,8 @@ class MainWindow(QMainWindow):
     def _on_error(self, message: str):
         log.error(f"Acquisition error: {message}")
         self.statusBar.showMessage(f"Error: {message}", 5000)
+        if "Storage pipeline" in message and not self._stop_in_progress:
+            self._on_stop()
 
     @pyqtSlot(np.ndarray, np.ndarray, float)
     def _on_fft_ready(self, freq: np.ndarray, spectrum: np.ndarray, df: float):
@@ -1445,7 +1477,7 @@ class MainWindow(QMainWindow):
                 space_data = np.array(space_data)
 
                 # Update Tab1 (traditional plots) only if it's active or if no tabs
-                if current_tab == 0 or current_tab is None:
+                if self.time_domain_enable_check.isChecked() and (current_tab == 0 or current_tab is None):
                     # SPACE模式恢复原始形式，不提供X轴数据
                     self.plot_curve_1[0].setData(space_data)
                     for i in range(1, 4):
@@ -1464,7 +1496,7 @@ class MainWindow(QMainWindow):
                     display_data = display_data.reshape(-1, channel_num)
 
                 # Update Tab1 only if it's active
-                if current_tab == 0 or current_tab is None:
+                if self.time_domain_enable_check.isChecked() and (current_tab == 0 or current_tab is None):
                     for ch in range(min(channel_num, 2)):
                         space_data = []
                         for i in range(frame_num):
@@ -1484,7 +1516,7 @@ class MainWindow(QMainWindow):
             # Time mode: overlay multiple frames
             if channel_num == 1:
                 # Update Tab1 only if it's active
-                if current_tab == 0 or current_tab is None:
+                if self.time_domain_enable_check.isChecked() and (current_tab == 0 or current_tab is None):
                     for i in range(min(4, frame_num)):
                         start = i * fbg_num
                         end = start + fbg_num
@@ -1506,7 +1538,7 @@ class MainWindow(QMainWindow):
                     display_data = display_data.reshape(-1, channel_num)
 
                 # Update Tab1 only if it's active
-                if current_tab == 0 or current_tab is None:
+                if self.time_domain_enable_check.isChecked() and (current_tab == 0 or current_tab is None):
                     for ch in range(min(channel_num, 4)):
                         if fbg_num <= len(display_data):
                             # Phase模式恢复原始形式，不提供X轴数据
@@ -1553,18 +1585,19 @@ class MainWindow(QMainWindow):
                         self._x_axis_cache[distance_key] = np.arange(data_length) / 10.0
                     x_axis = self._x_axis_cache[distance_key]
 
-                    self.plot_curve_1[0].setData(x_axis, normalized_frame)
-                    # 清空其他曲线
-                    for i in range(1, 4):
-                        self.plot_curve_1[i].setData([])
+                    if self.time_domain_enable_check.isChecked():
+                        self.plot_curve_1[0].setData(x_axis, normalized_frame)
+                        # ??????
+                        for i in range(1, 4):
+                            self.plot_curve_1[i].setData([])
 
-                    # 设置Y轴标签为电压单位
-                    self.plot_widget_1.setLabel('left', 'Amp. (V)',
-                                              **{'font-family': 'Times New Roman', 'font-size': '8pt'})
+                        # ??Y????????
+                        self.plot_widget_1.setLabel('left', 'Amp. (V)',
+                                                  **{'font-family': 'Times New Roman', 'font-size': '8pt'})
 
-                    # 设置X轴标签为距离单位
-                    self.plot_widget_1.setLabel('bottom', 'Distance (m)',
-                                              **{'font-family': 'Times New Roman', 'font-size': '8pt'})
+                        # ??X????????
+                        self.plot_widget_1.setLabel('bottom', 'Distance (m)',
+                                                  **{'font-family': 'Times New Roman', 'font-size': '8pt'})
 
                     log.debug(f"Single channel: averaged {len(data)//point_num} frames, "
                              f"display {len(normalized_frame)} points, normalized to voltage")
@@ -1603,18 +1636,19 @@ class MainWindow(QMainWindow):
                         self._x_axis_cache[distance_key] = np.arange(data_length) / 10.0
                     x_axis = self._x_axis_cache[distance_key]
 
-                    self.plot_curve_1[0].setData(x_axis, normalized_ch0)
-                    # 清空其他时域曲线
-                    for i in range(1, 4):
-                        self.plot_curve_1[i].setData([])
+                    if self.time_domain_enable_check.isChecked():
+                        self.plot_curve_1[0].setData(x_axis, normalized_ch0)
+                        # ????????
+                        for i in range(1, 4):
+                            self.plot_curve_1[i].setData([])
 
-                    # 设置第一个图的Y轴标签为电压单位
-                    self.plot_widget_1.setLabel('left', 'Amp. (V)',
-                                              **{'font-family': 'Times New Roman', 'font-size': '8pt'})
+                        # ???????Y????????
+                        self.plot_widget_1.setLabel('left', 'Amp. (V)',
+                                                  **{'font-family': 'Times New Roman', 'font-size': '8pt'})
 
-                    # 设置X轴标签为距离单位
-                    self.plot_widget_1.setLabel('bottom', 'Distance (m)',
-                                              **{'font-family': 'Times New Roman', 'font-size': '8pt'})
+                        # ??X????????
+                        self.plot_widget_1.setLabel('bottom', 'Distance (m)',
+                                                  **{'font-family': 'Times New Roman', 'font-size': '8pt'})
 
                 # 第二通道显示在FFT图位置（plot_widget_2）
                 ch1_data = data[:, 1]
@@ -1797,6 +1831,17 @@ class MainWindow(QMainWindow):
             self.frames_label.setText("Frames: 0")
             self.polling_label.setText("Poll: --ms")
 
+        if self.storage_manager is not None:
+            stats = self.storage_manager.snapshot_stats()
+            blocks_per_file = max(self.frames_per_file_spin.value(), 1)
+            self.save_status_label.setText(
+                f"Save: #{stats.current_file_no} {stats.current_file_block_count}/{blocks_per_file} Q:{stats.queue_size}"
+            )
+            if stats.last_error:
+                self.statusBar.showMessage(f"Storage: {stats.last_error}", 5000)
+        elif not self._stop_in_progress:
+            self.save_status_label.setText("Save: Off")
+
         self._update_file_estimates()
 
     def _update_calculated_values(self):
@@ -1834,16 +1879,20 @@ class MainWindow(QMainWindow):
         self._update_spectrum_psd_availability()
         self._update_calculated_values()
 
+    def _clear_time_domain_plot(self):
+        for curve in self.plot_curve_1:
+            curve.setData([])
+
+    def _on_time_domain_toggled(self, checked: bool):
+        self.plot_widget_1.setVisible(checked)
+        if not checked:
+            self._clear_time_domain_plot()
+
     def _on_rad_toggled(self, checked: bool):
-        """处理rad复选框切换，实时更新Phase数据的Y轴标签"""
+        """Handle rad checkbox toggle and refresh phase Y axis label."""
         data_source = self.data_source_combo.currentData()
         if data_source == DataSource.PHASE:
-            # 只有在Phase模式下才更新Y轴标签
-            if checked:
-                y_label = 'Amp. (rad)'
-            else:
-                y_label = 'Amp.'
-
+            y_label = 'Amp. (rad)' if checked else 'Amp.'
             self.plot_widget_1.setLabel('left', y_label,
                                       **{'font-family': 'Times New Roman', 'font-size': '8pt'})
 
@@ -1909,10 +1958,23 @@ class MainWindow(QMainWindow):
         try:
             frames_per_file = self.frames_per_file_spin.value()
             channel_num = self.channel_combo.currentData() or 1
-            fbg_num = self._fbg_num_per_ch if self._fbg_num_per_ch > 0 else 100
+            data_source = self.data_source_combo.currentData() or DataSource.RAW
 
-            frame_size_mb = fbg_num * channel_num * 4 / (1024 * 1024)
-            file_size_mb = frame_size_mb * frames_per_file
+            if data_source == DataSource.PHASE:
+                points_per_frame = self._fbg_num_per_ch if self._fbg_num_per_ch > 0 else 100
+                bytes_per_point = 4
+            else:
+                points_per_frame = self.point_num_spin.value()
+                bytes_per_point = 2
+
+            file_size_mb = (
+                points_per_frame
+                * channel_num
+                * bytes_per_point
+                * max(self.frame_num_spin.value(), 1)
+                * max(frames_per_file, 1)
+                / (1024 * 1024)
+            )
 
             self.file_size_label.setText(f"~{file_size_mb:.1f}MB/file")
         except Exception:
@@ -1928,7 +1990,7 @@ class MainWindow(QMainWindow):
             self._cpu_percent = psutil.cpu_percent(interval=0.1)
             self.cpu_label.setText(f"CPU: {self._cpu_percent:.1f}%")
 
-            if self.data_saver and self.data_saver.is_running:
+            if self.storage_manager and self.storage_manager.is_running:
                 save_path = self.save_path_edit.text()
                 if os.path.exists(save_path):
                     _, _, free_bytes = shutil.disk_usage(save_path)
@@ -1942,17 +2004,7 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event):
         log.info("Window closing...")
 
-        if self.acq_thread is not None and self.acq_thread.isRunning():
-            self.acq_thread.stop()
-            if not self.acq_thread.wait(2000):
-                self.acq_thread.terminate()
-                self.acq_thread.wait(1000)
-
-        if self.data_saver is not None:
-            try:
-                self.data_saver.stop()
-            except Exception as e:
-                log.warning(f"Error stopping data saver: {e}")
+        self._stop_runtime_components()
 
         if self.api is not None:
             try:

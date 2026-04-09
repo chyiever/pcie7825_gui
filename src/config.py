@@ -59,14 +59,14 @@ class BasicParams:
 class UploadParams:
     """Data upload configuration. No data_rate field (fixed 1GSps)."""
     channel_num: int = 1
-    data_source: int = DataSource.PHASE
+    data_source: int = DataSource.RAW
 
 
 @dataclass
 class PhaseDemodParams:
     """Phase demodulation parameters. Only polarization and detrend for 7825."""
-    polarization_diversity: bool = False
-    detrend_bw: float = 0.5
+    polarization_diversity: bool = True
+    detrend_bw: float = 10.0
 
 
 @dataclass

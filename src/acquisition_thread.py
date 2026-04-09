@@ -16,6 +16,7 @@ from PyQt5.QtCore import QThread, pyqtSignal, QMutex, QWaitCondition
 from wfbg7825_api import WFBG7825API, WFBG7825Error
 from config import DataSource, AllParams, POLLING_CONFIG, OPTIMIZED_BUFFER_SIZES, RAW_DATA_CONFIG, RAW_SAMPLING_CONFIG
 from logger import get_logger
+from storage import StorageBlock, StorageManager
 
 log = get_logger("acq_thread")
 
@@ -65,6 +66,13 @@ class AcquisitionThread(QThread):
         self._low_freq_interval = POLLING_CONFIG['low_freq_interval_ms'] / 1000.0
         self._buffer_threshold_high = POLLING_CONFIG['buffer_threshold_high']
         self._buffer_threshold_low = POLLING_CONFIG['buffer_threshold_low']
+        self._storage_manager: Optional[StorageManager] = None
+        self._storage_sequence = 0
+        self._storage_block_frames = 1
+        self._storage_pending_chunks = []
+        self._storage_pending_frames = 0
+        self._storage_points_per_frame = 0
+        self._storage_dtype_name = ""
 
         # RAW数据按需采样状态
         self._last_time_domain_sample = 0
@@ -86,11 +94,22 @@ class AcquisitionThread(QThread):
         self._frame_num = params.display.frame_num
         self._channel_num = params.upload.channel_num
         self._data_source = params.upload.data_source
+        self._storage_sequence = 0
+        self._storage_block_frames = max(1, min(params.basic.scan_rate, params.display.frame_num))
+        self._storage_pending_chunks = []
+        self._storage_pending_frames = 0
+        self._storage_points_per_frame = 0
+        self._storage_dtype_name = ""
 
         log.info(f"Configured: total_points={self._total_point_num}, "
                  f"fbg_num_per_ch={self._fbg_num_per_ch}, "
                  f"frames={self._frame_num}, channels={self._channel_num}, "
                  f"data_source={self._data_source}")
+
+    def set_storage_manager(self, storage_manager: Optional[StorageManager]):
+        """Attach a dedicated storage pipeline to the acquisition thread."""
+
+        self._storage_manager = storage_manager
 
     def run(self):
         """Thread main loop."""
@@ -143,6 +162,10 @@ class AcquisitionThread(QThread):
             self.error_occurred.emit(f"Acquisition error: {e}")
 
         finally:
+            try:
+                self._flush_storage_buffer(force=True)
+            except Exception as e:
+                log.warning(f"Failed to flush storage buffer on stop: {e}")
             log.info(f"=== Acquisition thread stopped === (loops={self._loop_count}, frames={self._frames_acquired})")
             self.acquisition_stopped.emit()
 
@@ -205,7 +228,6 @@ class AcquisitionThread(QThread):
             time.sleep(0.1)
             return
 
-        self._frames_acquired += self._frame_num
 
     def _on_demand_sampling_step(self):
         """RAW数据按需采样处理"""
@@ -386,37 +408,84 @@ class AcquisitionThread(QThread):
         points_per_ch = self._total_point_num * self._frame_num
 
         data, points_returned = self.api.read_data(points_per_ch, self._channel_num)
+
+        actual_points_per_ch = int(points_returned)
+        actual_frames = max(0, actual_points_per_ch // max(self._total_point_num, 1))
+        actual_points_total = actual_points_per_ch * self._channel_num
+        data = data[:actual_points_total]
         self._bytes_acquired += len(data) * 2
 
+        if actual_frames <= 0:
+            return
+
+        valid_points_per_ch = actual_frames * self._total_point_num
         if self._channel_num > 1:
             data = data.reshape(-1, self._channel_num)
+            data = data[:valid_points_per_ch, :]
+        else:
+            data = data[:valid_points_per_ch]
 
-        # 优化：仅传输前N帧给GUI，减少数据传输量
+        block_start_ns = self._estimate_block_start_time_ns(actual_frames)
+        self._submit_storage_block(
+            data,
+            frames_in_block=actual_frames,
+            points_per_frame=self._total_point_num,
+            created_at_ns=block_start_ns,
+        )
+
+        # ???????N??GUI????????
         gui_frame_limit = RAW_DATA_CONFIG['gui_frame_limit']
-        points_for_gui = self._total_point_num * gui_frame_limit
+        gui_frames = min(actual_frames, gui_frame_limit)
+        points_for_gui = self._total_point_num * gui_frames
 
         if self._channel_num > 1:
             gui_data = data[:points_for_gui, :]
         else:
             gui_data = data[:points_for_gui]
 
-        log.debug(f"Raw data: total={len(data)}, gui={len(gui_data)} "
-                  f"(reduction: {(1-len(gui_data)/len(data))*100:.1f}%)")
+        log.debug(f"Raw data: total={len(data)}, gui={len(gui_data)}, returned_frames={actual_frames} "
+                  f"(reduction: {(1-len(gui_data)/max(len(data), 1))*100:.1f}%)")
 
         self._pending_raw_data = (gui_data, self._data_source, self._channel_num)
         self._emit_if_ready()
+        self._frames_acquired += actual_frames
 
     def _read_phase_data(self):
         """Read phase data using fbg_num semantics."""
         fbg_points_per_ch = self._fbg_num_per_ch * self._frame_num
 
         phase_data, points_returned = self.api.read_phase_data(fbg_points_per_ch, self._channel_num)
+
+        actual_points_per_ch = int(points_returned)
+        actual_frames = max(0, actual_points_per_ch // max(self._fbg_num_per_ch, 1))
+        actual_points_total = actual_points_per_ch * self._channel_num
+        phase_data = phase_data[:actual_points_total]
         self._bytes_acquired += len(phase_data) * 4
 
+        if actual_frames <= 0:
+            return
+
+        valid_points_per_ch = actual_frames * self._fbg_num_per_ch
         if self._channel_num > 1:
             phase_data = phase_data.reshape(-1, self._channel_num)
+            phase_data = phase_data[:valid_points_per_ch, :]
+        else:
+            phase_data = phase_data[:valid_points_per_ch]
+
+        block_start_ns = self._estimate_block_start_time_ns(actual_frames)
+        self._submit_storage_block(
+            phase_data,
+            frames_in_block=actual_frames,
+            points_per_frame=self._fbg_num_per_ch,
+            created_at_ns=block_start_ns,
+        )
+        log.debug(
+            f"Phase data returned_frames={actual_frames}, requested_frames={self._frame_num}, "
+            f"points_per_ch={actual_points_per_ch}"
+        )
 
         self._pending_phase_data = (phase_data, self._channel_num)
+        self._frames_acquired += actual_frames
 
         # Also read monitor data
         try:
@@ -471,6 +540,82 @@ class AcquisitionThread(QThread):
         elif buffer_usage_ratio <= self._buffer_threshold_low:
             self._current_polling_interval = self._low_freq_interval
 
+    def _estimate_block_start_time_ns(self, frames_in_block: int) -> int:
+        scan_rate = self._params.basic.scan_rate if self._params else 1
+        duration_ns = int(frames_in_block * 1_000_000_000 / max(scan_rate, 1))
+        return max(time.time_ns() - duration_ns, 0)
+
+    def _emit_storage_chunk(self, flat_values: np.ndarray, frames_in_block: int, points_per_frame: int, created_at_ns: int):
+        block = StorageBlock(
+            sequence_id=self._storage_sequence,
+            created_at_ns=created_at_ns,
+            frames_in_block=frames_in_block,
+            points_per_frame=points_per_frame,
+            channel_count=self._channel_num,
+            dtype_name=self._storage_dtype_name,
+            payload=np.ascontiguousarray(flat_values).tobytes(),
+        )
+        self._storage_sequence += 1
+
+        if not self._storage_manager.submit_block(block):
+            raise RuntimeError(f"Storage pipeline could not accept block #{block.sequence_id}")
+
+    def _flush_storage_buffer(self, force: bool = False):
+        if self._storage_manager is None or self._storage_pending_frames <= 0:
+            return
+
+        values_per_frame = self._storage_points_per_frame * self._channel_num
+        target_frames = self._storage_block_frames
+        scan_rate = self._params.basic.scan_rate if self._params else 1
+
+        while self._storage_pending_frames >= target_frames:
+            frames_to_emit = target_frames
+            values_to_emit = frames_to_emit * values_per_frame
+            created_at_ns = self._storage_pending_chunks[0][2]
+            pieces = []
+
+            while values_to_emit > 0:
+                chunk_values, chunk_frames, chunk_started_at_ns = self._storage_pending_chunks[0]
+                if len(chunk_values) <= values_to_emit:
+                    pieces.append(chunk_values)
+                    values_to_emit -= len(chunk_values)
+                    self._storage_pending_frames -= chunk_frames
+                    self._storage_pending_chunks.pop(0)
+                else:
+                    take_values = values_to_emit
+                    take_frames = take_values // values_per_frame
+                    pieces.append(chunk_values[:take_values])
+                    remaining_values = chunk_values[take_values:]
+                    remaining_frames = chunk_frames - take_frames
+                    remaining_started_at_ns = chunk_started_at_ns + int(take_frames * 1_000_000_000 / max(scan_rate, 1))
+                    self._storage_pending_chunks[0] = (remaining_values, remaining_frames, remaining_started_at_ns)
+                    self._storage_pending_frames -= take_frames
+                    values_to_emit = 0
+
+            payload_values = pieces[0] if len(pieces) == 1 else np.concatenate(pieces)
+            self._emit_storage_chunk(payload_values, frames_to_emit, self._storage_points_per_frame, created_at_ns)
+
+        if force and self._storage_pending_frames > 0:
+            created_at_ns = self._storage_pending_chunks[0][2]
+            payload_values = self._storage_pending_chunks[0][0] if len(self._storage_pending_chunks) == 1 else np.concatenate([item[0] for item in self._storage_pending_chunks])
+            frames_to_emit = self._storage_pending_frames
+            self._storage_pending_chunks = []
+            self._storage_pending_frames = 0
+            self._emit_storage_chunk(payload_values, frames_to_emit, self._storage_points_per_frame, created_at_ns)
+
+    def _submit_storage_block(self, data: np.ndarray, frames_in_block: int, points_per_frame: int, created_at_ns: int):
+        """Accumulate acquisition data and emit one-second storage chunks."""
+
+        if self._storage_manager is None:
+            return
+
+        flat_values = np.ascontiguousarray(data).reshape(-1)
+        self._storage_points_per_frame = points_per_frame
+        self._storage_dtype_name = str(flat_values.dtype)
+        self._storage_pending_chunks.append((flat_values, frames_in_block, created_at_ns))
+        self._storage_pending_frames += frames_in_block
+        self._flush_storage_buffer(force=False)
+
     def stop(self):
         log.info("Stop requested - setting _running to False")
         self._running = False
@@ -482,14 +627,8 @@ class AcquisitionThread(QThread):
 
         log.info(f"Thread is running: {self.isRunning()}")
 
-        # Force terminate if thread doesn't stop gracefully
-        if self.isRunning():
-            log.warning("Forcing thread termination...")
-            if not self.wait(1000):  # 减少等待时间从3秒到1秒
-                log.warning("Thread did not finish in 1 second! Force terminating...")
-                self.terminate()
-                self.wait(500)  # 给terminate一些时间
-                log.info("Thread terminated")
+        if self.isRunning() and not self.wait(5000):
+            log.error("Acquisition thread did not stop within 5 seconds")
 
     def pause(self):
         self._mutex.lock()
@@ -591,6 +730,13 @@ class SimulatedAcquisitionThread(AcquisitionThread):
                     if self._channel_num > 1:
                         phase_data = phase_data.reshape(-1, self._channel_num)
 
+                    block_start_ns = self._estimate_block_start_time_ns(self._frame_num)
+                    self._submit_storage_block(
+                        phase_data,
+                        frames_in_block=self._frame_num,
+                        points_per_frame=fbg_num,
+                        created_at_ns=block_start_ns,
+                    )
                     self._pending_phase_data = (phase_data, self._channel_num)
                     self._bytes_acquired += len(phase_data.flatten()) * 4
 
@@ -604,6 +750,13 @@ class SimulatedAcquisitionThread(AcquisitionThread):
                     if self._channel_num > 1:
                         data = data.reshape(-1, self._channel_num)
 
+                    block_start_ns = self._estimate_block_start_time_ns(self._frame_num)
+                    self._submit_storage_block(
+                        data,
+                        frames_in_block=self._frame_num,
+                        points_per_frame=self._total_point_num,
+                        created_at_ns=block_start_ns,
+                    )
                     self._pending_raw_data = (data, self._data_source, self._channel_num)
                     self._bytes_acquired += len(data.flatten()) * 2
 
@@ -612,12 +765,15 @@ class SimulatedAcquisitionThread(AcquisitionThread):
                 if self._loop_count % 10 == 0:
                     self.buffer_status.emit(100000, 10)
 
-                self._frames_acquired += self._frame_num
-
+        
         except Exception as e:
             log.exception(f"Simulation error: {e}")
             self.error_occurred.emit(f"Simulation error: {e}")
 
         finally:
+            try:
+                self._flush_storage_buffer(force=True)
+            except Exception as e:
+                log.warning(f"Failed to flush simulated storage buffer on stop: {e}")
             log.info(f"=== Simulated acquisition thread stopped === (loops={self._loop_count})")
             self.acquisition_stopped.emit()
