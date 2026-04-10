@@ -29,6 +29,7 @@ class StorageManagerTest(unittest.TestCase):
             queue_maxsize=8,
             dtype_name="int32",
             target_frames_per_file=20000,
+            downsample_factor=1,
         )
 
     def _make_block(self, sequence_id: int, payload_size: int = 69 * 10000 * 4) -> StorageBlock:

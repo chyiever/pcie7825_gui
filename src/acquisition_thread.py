@@ -73,6 +73,7 @@ class AcquisitionThread(QThread):
         self._storage_pending_frames = 0
         self._storage_points_per_frame = 0
         self._storage_dtype_name = ""
+        self._storage_downsample_factor = 1
 
         # RAW数据按需采样状态
         self._last_time_domain_sample = 0
@@ -100,6 +101,7 @@ class AcquisitionThread(QThread):
         self._storage_pending_frames = 0
         self._storage_points_per_frame = 0
         self._storage_dtype_name = ""
+        self._storage_downsample_factor = max(1, getattr(params.save, "downsample_factor", 1))
 
         log.info(f"Configured: total_points={self._total_point_num}, "
                  f"fbg_num_per_ch={self._fbg_num_per_ch}, "
@@ -609,8 +611,19 @@ class AcquisitionThread(QThread):
         if self._storage_manager is None:
             return
 
-        flat_values = np.ascontiguousarray(data).reshape(-1)
-        self._storage_points_per_frame = points_per_frame
+        shaped_data = np.ascontiguousarray(data)
+        if self._channel_num > 1:
+            shaped_data = shaped_data.reshape(frames_in_block, points_per_frame, self._channel_num)
+            if self._storage_downsample_factor > 1:
+                shaped_data = shaped_data[:, ::self._storage_downsample_factor, :]
+            self._storage_points_per_frame = shaped_data.shape[1]
+        else:
+            shaped_data = shaped_data.reshape(frames_in_block, points_per_frame)
+            if self._storage_downsample_factor > 1:
+                shaped_data = shaped_data[:, ::self._storage_downsample_factor]
+            self._storage_points_per_frame = shaped_data.shape[1]
+
+        flat_values = shaped_data.reshape(-1)
         self._storage_dtype_name = str(flat_values.dtype)
         self._storage_pending_chunks.append((flat_values, frames_in_block, created_at_ns))
         self._storage_pending_frames += frames_in_block

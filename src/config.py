@@ -110,9 +110,11 @@ class DisplayParams:
     mode: int = DisplayMode.TIME
     region_index: int = 0       # FBG index for SPACE mode
     frame_num: int = 1000
+    time_domain_enabled: bool = True
     spectrum_enable: bool = False
     psd_enable: bool = False
     rad_enable: bool = False    # Convert phase data to radians for display (storage unaffected)
+    monitor_plot_enabled: bool = True
 
 
 @dataclass
@@ -122,6 +124,7 @@ class SaveParams:
     path: str = "D:/WFBG7825_DATA"
     file_prefix: str = ""
     frames_per_file: int = 10
+    downsample_factor: int = 1
 
 
 @dataclass

@@ -13,6 +13,7 @@ Adapted from PCIe-7821 with 7825-specific features:
 import sys
 import os
 import time
+import json
 import gc  # 垃圾回收
 import numpy as np
 import psutil
@@ -66,6 +67,7 @@ class MainWindow(QMainWindow):
         self._fft_worker_signals_connected = False
 
         self.params = AllParams()
+        self._settings_path = self._get_settings_path()
 
         # Peak detection state
         self._fbg_num_per_ch = 0
@@ -104,8 +106,10 @@ class MainWindow(QMainWindow):
         self._setup_plots()
         self._setup_time_space_widget()
         self._connect_signals()
+        self._load_local_params()
         self._on_data_source_changed(self.data_source_combo.currentIndex())
-        self._on_time_domain_toggled(True)
+        self._on_time_domain_toggled(self.time_domain_enable_check.isChecked())
+        self._on_monitor_plot_toggled(self.monitor_plot_check.isChecked())
 
         self._status_timer = QTimer(self)
         self._status_timer.timeout.connect(self._update_status)
@@ -123,6 +127,11 @@ class MainWindow(QMainWindow):
             self._update_device_status(True)
 
         log.info("MainWindow initialized")
+
+    def _get_settings_path(self) -> Path:
+        if getattr(sys, "frozen", False):
+            return Path(sys.executable).resolve().parent / "last_params.json"
+        return Path(__file__).resolve().parents[1] / "last_params.json"
 
     # ----- UI LAYOUT -----
 
@@ -545,10 +554,19 @@ class MainWindow(QMainWindow):
         self.frames_per_file_spin.valueChanged.connect(self._update_file_estimates)
         save_layout.addWidget(self.frames_per_file_spin, 1, 1)
 
-        save_layout.addWidget(QLabel("Est. Size:"), 1, 2)
+        save_layout.addWidget(QLabel("Downsample:"), 1, 2)
+        self.save_downsample_spin = QSpinBox()
+        self.save_downsample_spin.setRange(1, 100000)
+        self.save_downsample_spin.setValue(self.params.save.downsample_factor)
+        self.save_downsample_spin.setMinimumHeight(INPUT_MIN_HEIGHT)
+        self.save_downsample_spin.setMaximumWidth(INPUT_MAX_WIDTH)
+        self.save_downsample_spin.valueChanged.connect(self._update_file_estimates)
+        save_layout.addWidget(self.save_downsample_spin, 1, 3)
+
+        save_layout.addWidget(QLabel("Est. Size:"), 2, 0)
         self.file_size_label = QLabel("~?MB/file")
         self.file_size_label.setStyleSheet("font-weight: normal; color: #666666;")
-        save_layout.addWidget(self.file_size_label, 1, 3)
+        save_layout.addWidget(self.file_size_label, 2, 1, 1, 3)
 
         layout.addWidget(save_group)
 
@@ -792,6 +810,14 @@ class MainWindow(QMainWindow):
         # Add widgets to layout
         tab1_layout.addWidget(self.plot_widget_1)
         tab1_layout.addWidget(self.plot_widget_2)
+
+        monitor_control_layout = QHBoxLayout()
+        monitor_control_layout.setContentsMargins(0, 0, 0, 0)
+        monitor_control_layout.addStretch()
+        self.monitor_plot_check = QCheckBox("Plot Monitor Data")
+        self.monitor_plot_check.setChecked(self.params.display.monitor_plot_enabled)
+        monitor_control_layout.addWidget(self.monitor_plot_check)
+        tab1_layout.addLayout(monitor_control_layout)
         tab1_layout.addWidget(self.plot_widget_3)
 
         # Add tab to tab widget
@@ -854,10 +880,12 @@ class MainWindow(QMainWindow):
         self.point_num_spin.valueChanged.connect(self._update_calculated_values)
         self.scan_rate_spin.valueChanged.connect(self._update_calculated_values)
         self.frames_per_file_spin.valueChanged.connect(self._update_file_estimates)
+        self.save_downsample_spin.valueChanged.connect(self._update_file_estimates)
 
         # Connect rad checkbox to update Y-axis labels for phase data
         self.rad_check.toggled.connect(self._on_rad_toggled)
         self.time_domain_enable_check.toggled.connect(self._on_time_domain_toggled)
+        self.monitor_plot_check.toggled.connect(self._on_monitor_plot_toggled)
 
     # ----- DEVICE INIT -----
 
@@ -915,9 +943,11 @@ class MainWindow(QMainWindow):
         params.display.mode = DisplayMode.SPACE if self.mode_space_radio.isChecked() else DisplayMode.TIME
         params.display.region_index = self.region_index_spin.value()
         params.display.frame_num = self.frame_num_spin.value()
+        params.display.time_domain_enabled = self.time_domain_enable_check.isChecked()
         params.display.spectrum_enable = self.spectrum_enable_check.isChecked()
         params.display.psd_enable = self.psd_check.isChecked()
         params.display.rad_enable = self.rad_check.isChecked()
+        params.display.monitor_plot_enabled = self.monitor_plot_check.isChecked()
 
         # Collect time-space parameters if widget exists
         if hasattr(self, 'time_space_widget') and self.time_space_widget:
@@ -934,8 +964,196 @@ class MainWindow(QMainWindow):
         params.save.enable = self.save_enable_check.isChecked()
         params.save.path = self.save_path_edit.text()
         params.save.frames_per_file = self.frames_per_file_spin.value()
+        params.save.downsample_factor = self.save_downsample_spin.value()
 
         return params
+
+    def _apply_params_to_ui(self, params: AllParams):
+        self.clk_external_radio.setChecked(params.basic.clk_src == ClockSource.EXTERNAL)
+        self.clk_internal_radio.setChecked(params.basic.clk_src != ClockSource.EXTERNAL)
+        self.trig_in_radio.setChecked(params.basic.trig_dir == TriggerDirection.INPUT)
+        self.trig_out_radio.setChecked(params.basic.trig_dir != TriggerDirection.INPUT)
+        self.scan_rate_spin.setValue(params.basic.scan_rate)
+        self.pulse_width_spin.setValue(params.basic.pulse_width_ns)
+        self.point_num_spin.setValue(params.basic.point_num_per_scan)
+        self.bypass_spin.setValue(params.basic.bypass_point_num)
+
+        center_idx = self.center_freq_combo.findData(params.basic.center_freq_mhz)
+        if center_idx >= 0:
+            self.center_freq_combo.setCurrentIndex(center_idx)
+
+        channel_idx = self.channel_combo.findData(params.upload.channel_num)
+        if channel_idx >= 0:
+            self.channel_combo.setCurrentIndex(channel_idx)
+
+        source_idx = self.data_source_combo.findData(params.upload.data_source)
+        if source_idx >= 0:
+            self.data_source_combo.setCurrentIndex(source_idx)
+
+        self.polar_div_check.setChecked(params.phase_demod.polarization_diversity)
+        self.detrend_bw_spin.setValue(params.phase_demod.detrend_bw)
+        self.amp_base_spin.setValue(params.peak_detection.amp_base_line)
+        self.fbg_interval_spin.setValue(params.peak_detection.fbg_interval_m)
+
+        self.mode_space_radio.setChecked(params.display.mode == DisplayMode.SPACE)
+        self.mode_time_radio.setChecked(params.display.mode != DisplayMode.SPACE)
+        self.region_index_spin.setValue(params.display.region_index)
+        self.frame_num_spin.setValue(params.display.frame_num)
+        self.time_domain_enable_check.setChecked(params.display.time_domain_enabled)
+        self.spectrum_enable_check.setChecked(params.display.spectrum_enable)
+        self.psd_check.setChecked(params.display.psd_enable)
+        self.rad_check.setChecked(params.display.rad_enable)
+        self.monitor_plot_check.setChecked(params.display.monitor_plot_enabled)
+
+        if hasattr(self, 'time_space_widget') and self.time_space_widget:
+            self.time_space_widget.set_parameters({
+                'window_frames': params.time_space.window_frames,
+                'distance_range_start': params.time_space.distance_range_start,
+                'distance_range_end': params.time_space.distance_range_end,
+                'time_downsample': params.time_space.time_downsample,
+                'space_downsample': params.time_space.space_downsample,
+                'colormap_type': params.time_space.colormap_type,
+                'vmin': params.time_space.vmin,
+                'vmax': params.time_space.vmax,
+            })
+
+        self.save_enable_check.setChecked(params.save.enable)
+        self.save_path_edit.setText(params.save.path)
+        self.frames_per_file_spin.setValue(params.save.frames_per_file)
+        self.save_downsample_spin.setValue(max(1, params.save.downsample_factor))
+
+    def _load_local_params(self):
+        if not self._settings_path.exists():
+            return
+
+        try:
+            with open(self._settings_path, "r", encoding="utf-8") as f:
+                saved = json.load(f)
+        except Exception as e:
+            log.warning(f"Failed to load local params: {e}")
+            return
+
+        try:
+            params = AllParams()
+
+            basic = saved.get("basic", {})
+            params.basic.clk_src = basic.get("clk_src", params.basic.clk_src)
+            params.basic.trig_dir = basic.get("trig_dir", params.basic.trig_dir)
+            params.basic.scan_rate = basic.get("scan_rate", params.basic.scan_rate)
+            params.basic.pulse_width_ns = basic.get("pulse_width_ns", params.basic.pulse_width_ns)
+            params.basic.point_num_per_scan = basic.get("point_num_per_scan", params.basic.point_num_per_scan)
+            params.basic.bypass_point_num = basic.get("bypass_point_num", params.basic.bypass_point_num)
+            params.basic.center_freq_mhz = basic.get("center_freq_mhz", params.basic.center_freq_mhz)
+
+            upload = saved.get("upload", {})
+            params.upload.channel_num = upload.get("channel_num", params.upload.channel_num)
+            params.upload.data_source = upload.get("data_source", params.upload.data_source)
+
+            phase_demod = saved.get("phase_demod", {})
+            params.phase_demod.polarization_diversity = phase_demod.get("polarization_diversity", params.phase_demod.polarization_diversity)
+            params.phase_demod.detrend_bw = phase_demod.get("detrend_bw", params.phase_demod.detrend_bw)
+
+            peak_detection = saved.get("peak_detection", {})
+            params.peak_detection.amp_base_line = peak_detection.get("amp_base_line", params.peak_detection.amp_base_line)
+            params.peak_detection.fbg_interval_m = peak_detection.get("fbg_interval_m", params.peak_detection.fbg_interval_m)
+
+            display = saved.get("display", {})
+            params.display.mode = display.get("mode", params.display.mode)
+            params.display.region_index = display.get("region_index", params.display.region_index)
+            params.display.frame_num = display.get("frame_num", params.display.frame_num)
+            params.display.time_domain_enabled = display.get("time_domain_enabled", params.display.time_domain_enabled)
+            params.display.spectrum_enable = display.get("spectrum_enable", params.display.spectrum_enable)
+            params.display.psd_enable = display.get("psd_enable", params.display.psd_enable)
+            params.display.rad_enable = display.get("rad_enable", params.display.rad_enable)
+            params.display.monitor_plot_enabled = display.get("monitor_plot_enabled", params.display.monitor_plot_enabled)
+
+            time_space = saved.get("time_space", {})
+            params.time_space.window_frames = time_space.get("window_frames", params.time_space.window_frames)
+            params.time_space.distance_range_start = time_space.get("distance_range_start", params.time_space.distance_range_start)
+            params.time_space.distance_range_end = time_space.get("distance_range_end", params.time_space.distance_range_end)
+            params.time_space.time_downsample = time_space.get("time_downsample", params.time_space.time_downsample)
+            params.time_space.space_downsample = time_space.get("space_downsample", params.time_space.space_downsample)
+            params.time_space.colormap_type = time_space.get("colormap_type", params.time_space.colormap_type)
+            params.time_space.vmin = time_space.get("vmin", params.time_space.vmin)
+            params.time_space.vmax = time_space.get("vmax", params.time_space.vmax)
+
+            save = saved.get("save", {})
+            params.save.enable = save.get("enable", params.save.enable)
+            params.save.path = save.get("path", params.save.path)
+            params.save.file_prefix = save.get("file_prefix", params.save.file_prefix)
+            params.save.frames_per_file = save.get("frames_per_file", params.save.frames_per_file)
+            params.save.downsample_factor = max(1, save.get("downsample_factor", params.save.downsample_factor))
+
+            valid, msg = self._validate_params(params)
+            if not valid:
+                log.warning(f"Saved params ignored: {msg}")
+                return
+
+            self.params = params
+            self._apply_params_to_ui(params)
+            log.info(f"Loaded local params from {self._settings_path}")
+        except Exception as e:
+            log.warning(f"Failed to apply local params: {e}")
+
+    def _save_local_params(self):
+        try:
+            params = self._collect_params()
+            payload = {
+                "basic": {
+                    "clk_src": int(params.basic.clk_src),
+                    "trig_dir": int(params.basic.trig_dir),
+                    "scan_rate": int(params.basic.scan_rate),
+                    "pulse_width_ns": int(params.basic.pulse_width_ns),
+                    "point_num_per_scan": int(params.basic.point_num_per_scan),
+                    "bypass_point_num": int(params.basic.bypass_point_num),
+                    "center_freq_mhz": int(params.basic.center_freq_mhz),
+                },
+                "upload": {
+                    "channel_num": int(params.upload.channel_num),
+                    "data_source": int(params.upload.data_source),
+                },
+                "phase_demod": {
+                    "polarization_diversity": bool(params.phase_demod.polarization_diversity),
+                    "detrend_bw": float(params.phase_demod.detrend_bw),
+                },
+                "peak_detection": {
+                    "amp_base_line": int(params.peak_detection.amp_base_line),
+                    "fbg_interval_m": float(params.peak_detection.fbg_interval_m),
+                },
+                "display": {
+                    "mode": int(params.display.mode),
+                    "region_index": int(params.display.region_index),
+                    "frame_num": int(params.display.frame_num),
+                    "time_domain_enabled": bool(params.display.time_domain_enabled),
+                    "spectrum_enable": bool(params.display.spectrum_enable),
+                    "psd_enable": bool(params.display.psd_enable),
+                    "rad_enable": bool(params.display.rad_enable),
+                    "monitor_plot_enabled": bool(params.display.monitor_plot_enabled),
+                },
+                "time_space": {
+                    "window_frames": int(params.time_space.window_frames),
+                    "distance_range_start": int(params.time_space.distance_range_start),
+                    "distance_range_end": int(params.time_space.distance_range_end),
+                    "time_downsample": int(params.time_space.time_downsample),
+                    "space_downsample": int(params.time_space.space_downsample),
+                    "colormap_type": str(params.time_space.colormap_type),
+                    "vmin": float(params.time_space.vmin),
+                    "vmax": float(params.time_space.vmax),
+                },
+                "save": {
+                    "enable": bool(params.save.enable),
+                    "path": str(params.save.path),
+                    "file_prefix": str(params.save.file_prefix),
+                    "frames_per_file": int(params.save.frames_per_file),
+                    "downsample_factor": int(params.save.downsample_factor),
+                },
+            }
+            self._settings_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(self._settings_path, "w", encoding="utf-8") as f:
+                json.dump(payload, f, indent=2, ensure_ascii=False)
+            self.params = params
+        except Exception as e:
+            log.warning(f"Failed to save local params: {e}")
 
     def _validate_params(self, params: AllParams) -> tuple:
         valid, msg = validate_point_num(
@@ -999,6 +1217,7 @@ class MainWindow(QMainWindow):
             return
 
         self.params = params
+        self._save_local_params()
 
         if not self.simulation_mode:
             if not self._configure_device(params):
@@ -1128,6 +1347,7 @@ class MainWindow(QMainWindow):
             return
 
         self.params = params
+        self._save_local_params()
 
         # Configure device
         if not self.simulation_mode:
@@ -1283,7 +1503,7 @@ class MainWindow(QMainWindow):
         config = StorageSessionConfig(
             save_path=Path(params.save.path),
             scan_rate=params.basic.scan_rate,
-            points_per_frame=points_per_frame,
+            points_per_frame=max(1, (points_per_frame + params.save.downsample_factor - 1) // params.save.downsample_factor),
             channel_count=params.upload.channel_num,
             data_source=params.upload.data_source,
             frames_per_block=storage_chunk_frames,
@@ -1292,6 +1512,7 @@ class MainWindow(QMainWindow):
             queue_maxsize=OPTIMIZED_BUFFER_SIZES['storage_queue_frames'],
             dtype_name=dtype_name,
             file_prefix=params.save.file_prefix,
+            downsample_factor=params.save.downsample_factor,
         )
 
         manager = StorageManager()
@@ -1763,6 +1984,9 @@ class MainWindow(QMainWindow):
             return None
 
     def _update_monitor_display(self, data: np.ndarray, channel_num: int):
+        if not self.monitor_plot_check.isChecked():
+            return
+
         fbg_num = self._fbg_num_per_ch
         if fbg_num == 0:
             return
@@ -1864,10 +2088,13 @@ class MainWindow(QMainWindow):
         is_phase = (data_source == DataSource.PHASE)
 
         self.plot_widget_3.setEnabled(is_phase)
+        self.monitor_plot_check.setEnabled(is_phase)
         self.mode_space_radio.setEnabled(is_phase)
 
         if not is_phase:
             self.mode_time_radio.setChecked(True)
+            for curve in self.monitor_curves:
+                curve.setData([])
 
         # 重新评估spectrum和PSD选项的可用性
         self._update_spectrum_psd_availability()
@@ -1891,6 +2118,11 @@ class MainWindow(QMainWindow):
         self.plot_widget_1.setVisible(checked)
         if not checked:
             self._clear_time_domain_plot()
+
+    def _on_monitor_plot_toggled(self, checked: bool):
+        if not checked:
+            for curve in self.monitor_curves:
+                curve.setData([])
 
     def _on_rad_toggled(self, checked: bool):
         """Handle rad checkbox toggle and refresh phase Y axis label."""
@@ -1971,6 +2203,8 @@ class MainWindow(QMainWindow):
                 points_per_frame = self.point_num_spin.value()
                 bytes_per_point = 2
 
+            points_per_frame = max(1, (points_per_frame + self.save_downsample_spin.value() - 1) // self.save_downsample_spin.value())
+
             file_size_mb = (
                 points_per_frame
                 * channel_num
@@ -2008,6 +2242,7 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event):
         log.info("Window closing...")
 
+        self._save_local_params()
         self._stop_runtime_components()
 
         if self.api is not None:
