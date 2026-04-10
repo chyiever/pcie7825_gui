@@ -241,7 +241,7 @@ MONITOR_UPDATE_INTERVALS = {
 
 RAW_DATA_CONFIG = {
     'gui_frame_limit': 1,               # 仅传输前1帧给GUI (保持)
-    'time_domain_update_s': 3,        # 时域图更新间隔(秒) (1.0→1.5，减少负担)
+    'time_domain_update_s': 1.0,        # Raw时域图最小刷新间隔，按1秒节流
     'fft_update_s': 5.0,               # FFT更新间隔(秒) (3.0→5.0，减少计算)
     'frame_averaging': False,           # 禁用4帧平均 (保持)
     'max_gui_update_fps':1,        # GUI最大更新频率(FPS) (1.0→0.66)

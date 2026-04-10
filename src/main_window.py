@@ -816,6 +816,10 @@ class MainWindow(QMainWindow):
 
         for i in range(4):
             curve = self.plot_widget_1.plot(pen=pg.mkPen(colors[i], width=1.5))
+            # Raw大点数曲线复用同一个PlotDataItem，并开启视图裁剪/自动抽稀。
+            curve.setClipToView(True)
+            curve.setDownsampling(auto=True, method="peak")
+            curve.setSkipFiniteCheck(True)
             self.plot_curve_1.append(curve)
 
         for i in range(2):
@@ -1574,11 +1578,11 @@ class MainWindow(QMainWindow):
                 # 单通道模式
                 averaged_frame = self._compute_averaged_frame(data, point_num)
                 if averaged_frame is not None:
-                    # RAW数据归一化：除以32767转换为电压单位
-                    normalized_frame = averaged_frame.astype(np.float32) / 32767.0
+                    # Raw曲线按整数原值显示，不再做电压归一化。
+                    display_frame = averaged_frame.astype(np.int32, copy=False)
 
                     # RAW数据使用距离轴（米为单位）
-                    data_length = len(normalized_frame)
+                    data_length = len(display_frame)
                     distance_key = f"dist_{data_length}"
                     if distance_key not in self._x_axis_cache:
                         # X轴从采样点索引转换为距离：除以10
@@ -1586,24 +1590,24 @@ class MainWindow(QMainWindow):
                     x_axis = self._x_axis_cache[distance_key]
 
                     if self.time_domain_enable_check.isChecked():
-                        self.plot_curve_1[0].setData(x_axis, normalized_frame)
-                        # ??????
+                        self.plot_curve_1[0].setData(x_axis, display_frame)
+                        # 单通道Raw模式只保留曲线1，其余曲线清空。
                         for i in range(1, 4):
                             self.plot_curve_1[i].setData([])
 
-                        # ??Y????????
-                        self.plot_widget_1.setLabel('left', 'Amp. (V)',
+                        # Raw模式Y轴显示原始整数幅值，不再带V单位。
+                        self.plot_widget_1.setLabel('left', 'Amp.',
                                                   **{'font-family': 'Times New Roman', 'font-size': '8pt'})
 
-                        # ??X????????
+                        # X轴仍然按原有距离换算方式显示。
                         self.plot_widget_1.setLabel('bottom', 'Distance (m)',
                                                   **{'font-family': 'Times New Roman', 'font-size': '8pt'})
 
                     log.debug(f"Single channel: averaged {len(data)//point_num} frames, "
-                             f"display {len(normalized_frame)} points, normalized to voltage")
+                             f"display {len(display_frame)} integer points")
 
                     # 显式删除大数组，帮助垃圾回收
-                    del averaged_frame, normalized_frame
+                    del averaged_frame, display_frame
 
                 # FFT处理（如果启用且间隔满足）
                 fft_interval = RAW_DATA_CONFIG['fft_update_s']
@@ -1625,11 +1629,11 @@ class MainWindow(QMainWindow):
                 ch0_data = data[:, 0]
                 averaged_frame_ch0 = self._compute_averaged_frame(ch0_data, point_num, single_channel=True)
                 if averaged_frame_ch0 is not None:
-                    # RAW数据归一化：除以32767转换为电压单位
-                    normalized_ch0 = averaged_frame_ch0.astype(np.float32) / 32767.0
+                    # Raw曲线按整数原值显示，不再做电压归一化。
+                    display_ch0 = averaged_frame_ch0.astype(np.int32, copy=False)
 
                     # RAW数据使用距离轴（米为单位）
-                    data_length = len(normalized_ch0)
+                    data_length = len(display_ch0)
                     distance_key = f"dist_{data_length}"
                     if distance_key not in self._x_axis_cache:
                         # X轴从采样点索引转换为距离：除以10
@@ -1637,16 +1641,16 @@ class MainWindow(QMainWindow):
                     x_axis = self._x_axis_cache[distance_key]
 
                     if self.time_domain_enable_check.isChecked():
-                        self.plot_curve_1[0].setData(x_axis, normalized_ch0)
-                        # ????????
+                        self.plot_curve_1[0].setData(x_axis, display_ch0)
+                        # 双通道Raw模式下，时域图只显示第一通道。
                         for i in range(1, 4):
                             self.plot_curve_1[i].setData([])
 
-                        # ???????Y????????
-                        self.plot_widget_1.setLabel('left', 'Amp. (V)',
+                        # Raw模式Y轴显示原始整数幅值，不再带V单位。
+                        self.plot_widget_1.setLabel('left', 'Amp.',
                                                   **{'font-family': 'Times New Roman', 'font-size': '8pt'})
 
-                        # ??X????????
+                        # X轴仍然按原有距离换算方式显示。
                         self.plot_widget_1.setLabel('bottom', 'Distance (m)',
                                                   **{'font-family': 'Times New Roman', 'font-size': '8pt'})
 
@@ -1654,25 +1658,25 @@ class MainWindow(QMainWindow):
                 ch1_data = data[:, 1]
                 averaged_frame_ch1 = self._compute_averaged_frame(ch1_data, point_num, single_channel=True)
                 if averaged_frame_ch1 is not None:
-                    # RAW数据归一化：除以32767转换为电压单位
-                    normalized_ch1 = averaged_frame_ch1.astype(np.float32) / 32767.0
+                    # 第二通道在Raw模式下同样显示整数原值。
+                    display_ch1 = averaged_frame_ch1.astype(np.int32, copy=False)
 
                     # RAW数据使用距离轴（米为单位），与第一通道共享相同的缓存
-                    data_length = len(normalized_ch1)
+                    data_length = len(display_ch1)
                     distance_key = f"dist_{data_length}"
                     if distance_key not in self._x_axis_cache:
                         # X轴从采样点索引转换为距离：除以10
                         self._x_axis_cache[distance_key] = np.arange(data_length) / 10.0
                     x_axis = self._x_axis_cache[distance_key]
 
-                    self.spectrum_curve.setData(x_axis, normalized_ch1)
+                    self.spectrum_curve.setData(x_axis, display_ch1)
 
                     # 设置FFT图为时域显示模式，移除FFT Spectrum标题
                     self.plot_widget_2.setLogMode(x=False, y=False)
                     self.plot_widget_2.enableAutoRange()
                     self.plot_widget_2.setLabel('bottom', 'Distance (m)',
                                               **{'font-family': 'Times New Roman', 'font-size': '8pt'})
-                    self.plot_widget_2.setLabel('left', 'Amp. (V)',
+                    self.plot_widget_2.setLabel('left', 'Amp.',
                                               **{'font-family': 'Times New Roman', 'font-size': '8pt'})
 
                     # 移除FFT Spectrum标题，设置为Channel 2
@@ -1680,9 +1684,9 @@ class MainWindow(QMainWindow):
                     self.plot_widget_2.setLabel('top', ch2_title)
 
                     # 清理内存
-                    del averaged_frame_ch1, ch1_data, normalized_ch0, normalized_ch1
+                    del averaged_frame_ch1, ch1_data, display_ch0, display_ch1
 
-                log.debug("Dual channel: ch0 on time domain plot, ch1 on spectrum plot, both normalized to voltage")
+                log.debug("Dual channel: ch0 on time domain plot, ch1 on spectrum plot, both displayed as integers")
 
             self._last_time_domain_update = current_time
 

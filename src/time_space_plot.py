@@ -9,7 +9,6 @@ Provides complete control over axes, colormap, and display parameters.
 """
 
 import numpy as np
-from collections import deque
 from typing import Optional, Tuple, Dict, Any
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QGroupBox,
@@ -59,8 +58,11 @@ class TimeSpacePlotWidget(QWidget):
         super().__init__()
         log.debug("Initializing TimeSpacePlotWidget with PlotWidget+ImageItem")
 
-        # Data buffer and parameters
-        self._data_buffer = None
+        # 显示缓冲区参数。这里不再保存原始帧列表，而是直接维护固定尺寸的显示缓冲区。
+        self._display_buffer = None
+        self._display_block_width = 0
+        self._display_space_count = 0
+        self._valid_block_count = 0
         self._max_window_frames = 100
         self._window_frames = 5
         self._distance_start = 40
@@ -79,8 +81,9 @@ class TimeSpacePlotWidget(QWidget):
         self._update_interval_ms = 100
         self._scan_rate = 2000  # Default scan rate
 
-        # Timers
+        # 定时器负责合并多次数据到达后的刷新请求，避免每次都立即重绘。
         self._display_timer = QTimer()
+        self._display_timer.setInterval(self._update_interval_ms)
         self._display_timer.timeout.connect(self._process_pending_update)
 
         self._setup_ui()
@@ -291,8 +294,8 @@ class TimeSpacePlotWidget(QWidget):
         self.plot_widget.setMinimumSize(700, 400)  # Slightly smaller to make room for histogram
         self.plot_widget.setBackground('w')
 
-        # Add ImageItem for 2D data display
-        self.image_item = pg.ImageItem()
+        # 统一使用row-major顺序，直接传入(space, time)二维数组，保持X=时间、Y=空间。
+        self.image_item = pg.ImageItem(axisOrder="row-major")
         self.plot_widget.addItem(self.image_item)
 
         # Set axis labels with proper styling
@@ -489,19 +492,24 @@ class TimeSpacePlotWidget(QWidget):
     def _on_distance_start_changed(self, value):
         self._distance_start = value
         self._update_distance_range()
+        self._invalidate_display_buffer()
 
     def _on_distance_end_changed(self, value):
         self._distance_end = value
         self._update_distance_range()
+        self._invalidate_display_buffer()
 
     def _on_window_frames_changed(self, value):
         self._window_frames = value
+        self._invalidate_display_buffer()
 
     def _on_time_downsample_changed(self, value):
         self._time_downsample = value
+        self._invalidate_display_buffer()
 
     def _on_space_downsample_changed(self, value):
         self._space_downsample = value
+        self._invalidate_display_buffer()
 
     def _on_vmin_changed(self, value):
         self._vmin = value
@@ -521,6 +529,14 @@ class TimeSpacePlotWidget(QWidget):
         """Handle PLOT button click event."""
         self._plot_enabled = checked
         self._update_plot_button_style()
+
+        if self._plot_enabled:
+            # 启用绘图后启动定时器，由定时器统一处理挂起的刷新请求。
+            if not self._display_timer.isActive():
+                self._display_timer.start()
+        else:
+            self._display_timer.stop()
+            self._pending_update = False
 
         # Emit signal to notify main window
         if hasattr(self, 'plotStateChanged'):
@@ -579,6 +595,7 @@ class TimeSpacePlotWidget(QWidget):
         self.colormap_combo.setCurrentText("Jet")
 
         self._apply_colormap()
+        self._invalidate_display_buffer()
         log.info("Reset time-space parameters to defaults")
 
     def _update_distance_range(self):
@@ -588,11 +605,79 @@ class TimeSpacePlotWidget(QWidget):
             self._distance_end = self._distance_start + 1
             self.distance_end_spin.setValue(self._distance_end)
 
+    def _invalidate_display_buffer(self, clear_image: bool = True):
+        """参数变化后丢弃旧显示缓冲区，等待下一批数据按新参数重建。"""
+        self._display_buffer = None
+        self._display_block_width = 0
+        self._display_space_count = 0
+        self._valid_block_count = 0
+        self._current_frame_count = 0
+        self._pending_update = False
+        if clear_image:
+            self.image_item.clear()
+
+    def _build_display_block(self, phase_2d: np.ndarray) -> Optional[np.ndarray]:
+        """将单次输入数据裁剪/降采样成可直接写入显示缓冲区的二维块。"""
+        start_idx = max(0, self._distance_start)
+        end_idx = min(phase_2d.shape[0], self._distance_end)
+        if start_idx >= end_idx:
+            log.warning(f"Invalid FBG range: {start_idx} >= {end_idx}")
+            return None
+
+        space_step = max(1, self._space_downsample)
+        time_step = max(1, self._time_downsample)
+
+        # 先裁剪空间范围，再做时间/空间下采样，避免后续全量hstack。
+        spatial_windowed = phase_2d[start_idx:end_idx, :]
+        display_block = np.asarray(spatial_windowed[::space_step, ::time_step], dtype=np.float32)
+        if display_block.shape[0] < 1 or display_block.shape[1] < 1:
+            log.warning(f"Insufficient data for display block: {display_block.shape}")
+            return None
+        return display_block
+
+    def _ensure_display_buffer(self, space_count: int, block_width: int) -> None:
+        """按当前窗口参数创建固定尺寸显示缓冲区。"""
+        buffer_width = max(1, block_width * max(1, self._window_frames))
+        if (
+            self._display_buffer is not None
+            and self._display_space_count == space_count
+            and self._display_block_width == block_width
+            and self._display_buffer.shape == (space_count, buffer_width)
+        ):
+            return
+
+        # 固定尺寸滚动缓冲区：空间维固定，时间维为单块宽度 × 窗口块数。
+        self._display_buffer = np.zeros((space_count, buffer_width), dtype=np.float32)
+        self._display_block_width = block_width
+        self._display_space_count = space_count
+        self._valid_block_count = 0
+        self._current_frame_count = 0
+
+    def _append_display_block(self, display_block: np.ndarray) -> None:
+        """将新数据块写入固定显示缓冲区，超出窗口时整体左移。"""
+        if self._display_buffer is None:
+            return
+
+        if display_block.shape[1] != self._display_block_width:
+            self._ensure_display_buffer(display_block.shape[0], display_block.shape[1])
+
+        if self._valid_block_count < self._window_frames:
+            start_col = self._valid_block_count * self._display_block_width
+            end_col = start_col + self._display_block_width
+            self._display_buffer[:, start_col:end_col] = display_block
+            self._valid_block_count += 1
+        else:
+            # 缓冲区满后按块左移，只保留最近window_frames批数据。
+            self._display_buffer[:, :-self._display_block_width] = self._display_buffer[:, self._display_block_width:]
+            self._display_buffer[:, -self._display_block_width:] = display_block
+
+        self._current_frame_count = self._valid_block_count
+
     def _process_pending_update(self):
         """Process pending display update."""
         if self._pending_update:
             self._pending_update = False
-            # Trigger actual plot update if needed
+            self._update_display()
 
     def update_data(self, data: np.ndarray, channel_num: int = 1) -> bool:
         """
@@ -622,6 +707,7 @@ class TimeSpacePlotWidget(QWidget):
 
             fbg_num = main_window._fbg_num_per_ch
             frame_num = main_window.params.display.frame_num
+            self._scan_rate = max(1, int(main_window.params.basic.scan_rate))
 
             # Step 1: Reshape 1D data to 2D structure (fbg_num, frame_num)
             if data.ndim == 1:
@@ -640,17 +726,17 @@ class TimeSpacePlotWidget(QWidget):
 
             log.debug(f"Reshaped data: {data.shape} -> {phase_2d.shape} (fbg_num={fbg_num}, frame_num={frame_num})")
 
-            # Initialize or update data buffer
-            if self._data_buffer is None:
-                self._data_buffer = deque(maxlen=self._max_window_frames)
+            display_block = self._build_display_block(phase_2d)
+            if display_block is None:
+                return False
 
-            # Step 4: Add new frame to buffer (will be concatenated horizontally later)
-            self._data_buffer.append(phase_2d)
-            self._current_frame_count = len(self._data_buffer)
+            self._ensure_display_buffer(display_block.shape[0], display_block.shape[1])
+            self._append_display_block(display_block)
 
-            # Create time-space data from buffer when enough frames available
-            if len(self._data_buffer) >= self._window_frames:
-                self._update_display()
+            # 数据先写入固定缓冲区，再交给定时器统一刷新，避免频繁重绘。
+            self._pending_update = True
+            if self._plot_enabled and not self._display_timer.isActive():
+                self._display_timer.start()
 
             return True
 
@@ -661,53 +747,31 @@ class TimeSpacePlotWidget(QWidget):
     def _update_display(self):
         """Update the display with processed time-space data."""
         try:
-            # Step 4: Concatenate recent frames horizontally
-            recent_frames = list(self._data_buffer)[-self._window_frames:]
-            concatenated_data = np.hstack(recent_frames)  # (fbg_num, total_time_points)
-
-            log.debug(f"Concatenated {len(recent_frames)} frames: {concatenated_data.shape}")
-
-            # Step 2: Apply spatial range selection
-            start_idx = max(0, self._distance_start)
-            end_idx = min(concatenated_data.shape[0], self._distance_end)
-
-            if start_idx >= end_idx:
-                log.warning(f"Invalid FBG range: {start_idx} >= {end_idx}")
+            if self._display_buffer is None or self._valid_block_count == 0:
                 return
 
-            # Extract FBG range (spatial dimension)
-            spatial_windowed = concatenated_data[start_idx:end_idx, :]  # (selected_fbg, total_time)
-
-            # Step 3: Apply downsampling
-            space_step = max(1, self._space_downsample)
-            time_step = max(1, self._time_downsample)
-
-            # Downsample both dimensions
-            downsampled_data = spatial_windowed[::space_step, ::time_step]
-
-            # Ensure minimum size for display
-            if downsampled_data.shape[0] < 1 or downsampled_data.shape[1] < 2:
-                log.warning(f"Insufficient data for display: {downsampled_data.shape}")
+            valid_cols = self._valid_block_count * self._display_block_width
+            display_data = self._display_buffer[:, :valid_cols]
+            if display_data.shape[1] < 1:
                 return
 
-            # Set image data (space=Y, time=X)
-            # 注意：PyQtGraph的ImageItem需要转置以获得正确的显示方向
-            # 我们的数据是(space, time)，需要转置为(time, space)以正确显示
-            display_data_transposed = downsampled_data.T  # (time, space)
-            self.image_item.setImage(display_data_transposed, levels=(self._vmin, self._vmax))
+            # row-major下输入数组形状为(height, width)=(space, time)，不再额外转置。
+            self.image_item.setImage(display_data, autoLevels=False)
+            self.image_item.setLevels((self._vmin, self._vmax))
 
             # Update axis scaling
-            self._update_axis_labels(concatenated_data.shape)
+            self._update_axis_labels(self._valid_block_count)
 
-            log.debug(f"Updated display: concatenated={concatenated_data.shape}, "
-                     f"spatial_range=[{start_idx}:{end_idx}], "
-                     f"final_display={downsampled_data.shape}")
+            log.debug(
+                f"Updated display buffer: blocks={self._valid_block_count}, "
+                f"block_width={self._display_block_width}, final_display={display_data.shape}"
+            )
 
         except Exception as e:
             log.error(f"Error updating display: {e}")
 
-    def _update_axis_labels(self, concatenated_shape: tuple):
-        """Update axis labels and scales based on concatenated data dimensions."""
+    def _update_axis_labels(self, valid_block_count: int):
+        """Update axis labels and scales based on buffered display blocks."""
         try:
             # Get parameters
             main_window = self.parent()
@@ -720,9 +784,8 @@ class TimeSpacePlotWidget(QWidget):
             fbg_num = main_window._fbg_num_per_ch
             frame_num = main_window.params.display.frame_num
 
-            # Calculate coordinate ranges
-            total_time_points = concatenated_shape[1]  # Total time points after concatenation
-            time_duration_s = (total_time_points / frame_num) * (frame_num / self._scan_rate)
+            # 使用原始帧数计算时间宽度，使坐标轴仍然反映真实时间跨度。
+            time_duration_s = max(1.0 / self._scan_rate, (frame_num * max(valid_block_count, 1)) / self._scan_rate)
 
             # Apply FBG range (space axis)
             space_start_actual = max(0, self._distance_start)
@@ -737,7 +800,7 @@ class TimeSpacePlotWidget(QWidget):
 
             log.debug(f"Set image coordinates: Time=[0,{time_duration_s:.6f}]s, "
                      f"FBG=[{space_start_actual},{space_end_actual}], "
-                     f"concatenated_shape={concatenated_shape}")
+                     f"valid_blocks={valid_block_count}")
 
         except Exception as e:
             log.warning(f"Error updating axis labels: {e}")
@@ -779,7 +842,5 @@ class TimeSpacePlotWidget(QWidget):
 
     def clear_data(self):
         """Clear all data and reset the display."""
-        self._data_buffer = None
-        self._current_frame_count = 0
-        self.image_item.clear()
+        self._invalidate_display_buffer()
         log.debug("TimeSpacePlotWidget data cleared")
