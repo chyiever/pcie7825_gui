@@ -27,7 +27,7 @@ from PyQt5.QtWidgets import (
     QMessageBox, QStatusBar, QSplitter, QFrame, QSizePolicy, QProgressBar,
     QScrollArea, QTabWidget
 )
-from PyQt5.QtCore import Qt, QTimer, pyqtSlot
+from PyQt5.QtCore import Qt, QTimer, pyqtSlot, pyqtSignal
 from PyQt5.QtGui import QFont, QPixmap
 import pyqtgraph as pg
 
@@ -50,6 +50,59 @@ from storage import StorageManager, StorageSessionConfig
 log = get_logger("gui")
 
 
+class ZoomablePlotViewBox(pg.ViewBox):
+    """Plot ViewBox with rectangle zoom, horizontal pan, and right-click View All."""
+
+    sigManualZoom = pyqtSignal(str)
+    sigViewAllRequested = pyqtSignal(str)
+
+    def __init__(self, plot_key: str):
+        super().__init__()
+        self._plot_key = plot_key
+        self._view_all_action = None
+        self._view_all_hooked = False
+        self.setMouseMode(self.RectMode)
+
+    def mouseDragEvent(self, ev, axis=None):
+        if ev.button() == Qt.LeftButton and (ev.modifiers() & Qt.ShiftModifier):
+            ev.accept()
+            if ev.isStart():
+                self.sigManualZoom.emit(self._plot_key)
+                return
+
+            delta = self.mapToView(ev.lastPos()) - self.mapToView(ev.pos())
+            self.translateBy(x=delta.x(), y=0.0)
+            if ev.isFinish():
+                self.sigManualZoom.emit(self._plot_key)
+            return
+
+        super().mouseDragEvent(ev, axis=axis)
+        if ev.button() == Qt.LeftButton and ev.isFinish():
+            self.sigManualZoom.emit(self._plot_key)
+
+    def wheelEvent(self, ev, axis=None):
+        super().wheelEvent(ev, axis=axis)
+        self.sigManualZoom.emit(self._plot_key)
+
+    def mouseClickEvent(self, ev):
+        if ev.button() == Qt.RightButton:
+            ev.accept()
+            menu = self.getMenu(ev)
+            if self._view_all_action is None:
+                for action in menu.actions():
+                    if action.text() == "View All":
+                        self._view_all_action = action
+                        break
+            if self._view_all_action is not None and not self._view_all_hooked:
+                self._view_all_action.triggered.connect(
+                    lambda checked=False, plot_key=self._plot_key: self.sigViewAllRequested.emit(plot_key)
+                )
+                self._view_all_hooked = True
+            menu.popup(ev.screenPos().toPoint())
+            return
+        super().mouseClickEvent(ev)
+
+
 class MainWindow(QMainWindow):
     """Main application window for WFBG-7825."""
 
@@ -68,6 +121,8 @@ class MainWindow(QMainWindow):
 
         self.params = AllParams()
         self._settings_path = self._get_settings_path()
+        self._interactive_plot_widgets = {}
+        self._plot_zoom_locked = {}
 
         # Peak detection state
         self._fbg_num_per_ch = 0
@@ -133,6 +188,11 @@ class MainWindow(QMainWindow):
             return Path(sys.executable).resolve().parent / "last_params.json"
         return Path(__file__).resolve().parents[1] / "last_params.json"
 
+    def _get_bundle_root(self) -> Path:
+        if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+            return Path(sys._MEIPASS)
+        return Path(__file__).resolve().parents[1]
+
     # ----- UI LAYOUT -----
 
     def _setup_ui(self):
@@ -182,10 +242,9 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(10, 3, 10, 3)
 
         logo_label = QLabel()
-        project_root = os.path.dirname(os.path.dirname(__file__))
-        logo_path = os.path.join(project_root, "resources", "logo.png")
-        if os.path.exists(logo_path):
-            pixmap = QPixmap(logo_path)
+        logo_path = self._get_bundle_root() / "resources" / "logo.png"
+        if logo_path.exists():
+            pixmap = QPixmap(str(logo_path))
             scaled_pixmap = pixmap.scaledToHeight(40, Qt.SmoothTransformation)
             logo_label.setPixmap(scaled_pixmap)
         else:
@@ -506,7 +565,6 @@ class MainWindow(QMainWindow):
 
         self.time_domain_enable_check = QCheckBox("Time Domain")
         self.time_domain_enable_check.setChecked(True)
-        display_layout.addWidget(self.time_domain_enable_check, 2, 2)
 
         self.spectrum_enable_check = QCheckBox("Spectrum")
         self.spectrum_enable_check.setChecked(False)
@@ -520,6 +578,16 @@ class MainWindow(QMainWindow):
         self.rad_check.setChecked(self.params.display.rad_enable)
         self.rad_check.setToolTip("Convert phase data to radians for display (/ 32767 * pi)")
         display_layout.addWidget(self.rad_check, 2, 0)
+
+        self.monitor_plot_check = QCheckBox("Plot Monitor Data")
+        self.monitor_plot_check.setChecked(self.params.display.monitor_plot_enabled)
+        display_options_layout = QHBoxLayout()
+        display_options_layout.setSpacing(10)
+        display_options_layout.setContentsMargins(0, 0, 0, 0)
+        display_options_layout.addWidget(self.time_domain_enable_check)
+        display_options_layout.addWidget(self.monitor_plot_check)
+        display_options_layout.addStretch()
+        display_layout.addLayout(display_options_layout, 2, 1, 1, 3)
 
         layout.addWidget(display_group)
 
@@ -732,8 +800,8 @@ class MainWindow(QMainWindow):
         tab1_layout.setContentsMargins(5, 5, 5, 10)
 
         # Create plots with improved styling
-        self.plot_widget_1 = pg.PlotWidget()
-        self.plot_widget_2 = pg.PlotWidget()
+        self.plot_widget_1 = pg.PlotWidget(viewBox=ZoomablePlotViewBox("plot1"))
+        self.plot_widget_2 = pg.PlotWidget(viewBox=ZoomablePlotViewBox("plot2"))
         self.plot_widget_3 = pg.PlotWidget()
 
         # Configure plot styles
@@ -799,26 +867,17 @@ class MainWindow(QMainWindow):
         self.plot_widget_2.setLogMode(x=False, y=False)
         self.monitor_curves = []
 
-        # Set plot widget sizes
-        for pw, min_h, max_h in [(self.plot_widget_1, 180, 210),
-                                  (self.plot_widget_2, 180, 210),
-                                  (self.plot_widget_3, 130, 160)]:
+        # Let the plots stretch with the window while keeping enough headroom for titles.
+        for pw, min_h in [(self.plot_widget_1, 180),
+                          (self.plot_widget_2, 180),
+                          (self.plot_widget_3, 150)]:
             pw.setMinimumHeight(min_h)
-            pw.setMaximumHeight(max_h)
-            pw.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+            pw.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
         # Add widgets to layout
-        tab1_layout.addWidget(self.plot_widget_1)
-        tab1_layout.addWidget(self.plot_widget_2)
-
-        monitor_control_layout = QHBoxLayout()
-        monitor_control_layout.setContentsMargins(0, 0, 0, 0)
-        monitor_control_layout.addStretch()
-        self.monitor_plot_check = QCheckBox("Plot Monitor Data")
-        self.monitor_plot_check.setChecked(self.params.display.monitor_plot_enabled)
-        monitor_control_layout.addWidget(self.monitor_plot_check)
-        tab1_layout.addLayout(monitor_control_layout)
-        tab1_layout.addWidget(self.plot_widget_3)
+        tab1_layout.addWidget(self.plot_widget_1, 1)
+        tab1_layout.addWidget(self.plot_widget_2, 1)
+        tab1_layout.addWidget(self.plot_widget_3, 1)
 
         # Add tab to tab widget
         self.plot_tabs.addTab(tab1_widget, "Traditional Plots")
@@ -840,6 +899,9 @@ class MainWindow(QMainWindow):
     def _setup_plots(self):
         colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728']
 
+        self._setup_interactive_plot(self.plot_widget_1, "plot1")
+        self._setup_interactive_plot(self.plot_widget_2, "plot2")
+
         for i in range(4):
             curve = self.plot_widget_1.plot(pen=pg.mkPen(colors[i], width=1.5))
             # Raw大点数曲线复用同一个PlotDataItem，并开启视图裁剪/自动抽稀。
@@ -851,6 +913,56 @@ class MainWindow(QMainWindow):
         for i in range(2):
             curve = self.plot_widget_3.plot(pen=pg.mkPen(colors[i], width=1.5))
             self.monitor_curves.append(curve)
+
+    def _setup_interactive_plot(self, plot_widget: pg.PlotWidget, plot_key: str):
+        self._interactive_plot_widgets[plot_key] = plot_widget
+        self._plot_zoom_locked[plot_key] = False
+
+        view_box = plot_widget.getViewBox()
+        if isinstance(view_box, ZoomablePlotViewBox):
+            view_box.sigManualZoom.connect(self._on_plot_manual_zoom)
+            view_box.sigViewAllRequested.connect(self._on_plot_view_all)
+
+    def _on_plot_manual_zoom(self, plot_key: str):
+        plot_widget = self._interactive_plot_widgets.get(plot_key)
+        if plot_widget is None:
+            return
+
+        self._plot_zoom_locked[plot_key] = True
+        plot_widget.getViewBox().disableAutoRange()
+
+    def _on_plot_view_all(self, plot_key: str):
+        self._restore_plot_auto_range(plot_key)
+
+    def _restore_plot_auto_range(self, plot_key: str):
+        plot_widget = self._interactive_plot_widgets.get(plot_key)
+        if plot_widget is None:
+            return
+
+        self._plot_zoom_locked[plot_key] = False
+        view_box = plot_widget.getViewBox()
+        view_box.enableAutoRange(axis=pg.ViewBox.XAxis)
+        view_box.enableAutoRange(axis=pg.ViewBox.YAxis)
+        view_box.autoRange()
+
+    def _plot_zoom_is_locked(self, plot_key: str) -> bool:
+        return self._plot_zoom_locked.get(plot_key, False)
+
+    def _set_plot_2_auto_range(self, *, x_range=None, padding: float = 0.02, x_only: bool = False):
+        if self._plot_zoom_is_locked("plot2"):
+            return
+
+        if x_range is not None:
+            self.plot_widget_2.setXRange(x_range[0], x_range[1], padding=padding)
+            self.plot_widget_2.enableAutoRange(axis='y')
+            return
+
+        if x_only:
+            self.plot_widget_2.enableAutoRange(axis='x')
+            self.plot_widget_2.enableAutoRange(axis='y')
+            return
+
+        self.plot_widget_2.enableAutoRange()
 
     def _setup_time_space_widget(self):
         """Initialize time-space widget with default parameters"""
@@ -1647,7 +1759,7 @@ class MainWindow(QMainWindow):
                 freq_display = freq_filtered / 1e6
                 self.spectrum_curve.setData(freq_display, spectrum_filtered)
 
-                self.plot_widget_2.enableAutoRange(axis='x')
+                self._set_plot_2_auto_range(x_only=True)
                 self.plot_widget_2.setLabel('bottom', 'Frequency (MHz)',
                                           **{'font-family': 'Times New Roman', 'font-size': '8pt'})
 
@@ -1894,7 +2006,7 @@ class MainWindow(QMainWindow):
 
                     # 设置FFT图为时域显示模式，移除FFT Spectrum标题
                     self.plot_widget_2.setLogMode(x=False, y=False)
-                    self.plot_widget_2.enableAutoRange()
+                    self._set_plot_2_auto_range()
                     self.plot_widget_2.setLabel('bottom', 'Distance (m)',
                                               **{'font-family': 'Times New Roman', 'font-size': '8pt'})
                     self.plot_widget_2.setLabel('left', 'Amp.',
@@ -2024,11 +2136,11 @@ class MainWindow(QMainWindow):
                 self.spectrum_curve.setData(freq_display, spectrum_filtered)
 
                 if data_type == 'int':
-                    self.plot_widget_2.setXRange(1.0, nyquist, padding=0.02)
+                    self._set_plot_2_auto_range(x_range=(1.0, nyquist), padding=0.02)
                     self.plot_widget_2.setLabel('bottom', 'Frequency (Hz)',
                                               **{'font-family': 'Times New Roman', 'font-size': '8pt'})
                 else:
-                    self.plot_widget_2.enableAutoRange(axis='x')
+                    self._set_plot_2_auto_range(x_only=True)
                     self.plot_widget_2.setLabel('bottom', 'Frequency (MHz)',
                                               **{'font-family': 'Times New Roman', 'font-size': '8pt'})
 

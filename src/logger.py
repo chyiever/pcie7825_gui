@@ -5,10 +5,12 @@ Thread-aware logging with performance timing for the WFBG-7825 DAS system.
 """
 
 import logging
+import os
 import sys
 import threading
 import time
 from datetime import datetime
+from logging import FileHandler
 from pathlib import Path
 from typing import Optional
 
@@ -26,6 +28,49 @@ class ThreadFormatter(logging.Formatter):
         record.thread_name = threading.current_thread().name
         record.thread_id = threading.current_thread().ident
         return super().format(record)
+
+
+def get_runtime_root() -> Path:
+    """Resolve the runtime root for source and frozen deployments."""
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parents[1]
+
+
+def build_default_log_path(now: Optional[datetime] = None) -> Path:
+    """Build the default local log file path."""
+    timestamp = (now or datetime.now()).strftime("%Y-%m-%d-%H-%M")
+    return get_runtime_root() / "logs" / f"{timestamp}-log.txt"
+
+
+class DailyLogFileHandler(FileHandler):
+    """File handler that switches to a new local file when the date changes."""
+
+    def __init__(self, log_dir: Path, encoding: str = "utf-8"):
+        self.log_dir = Path(log_dir)
+        self.log_dir.mkdir(parents=True, exist_ok=True)
+        now = datetime.now()
+        self._current_date = now.strftime("%Y-%m-%d")
+        super().__init__(self._build_log_path(now), mode="a", encoding=encoding, delay=True)
+
+    def _build_log_path(self, now: datetime) -> str:
+        return str(self.log_dir / f"{now.strftime('%Y-%m-%d-%H-%M')}-log.txt")
+
+    def _rotate_if_needed(self) -> None:
+        current_date = datetime.now().strftime("%Y-%m-%d")
+        if current_date == self._current_date:
+            return
+
+        if self.stream:
+            self.stream.close()
+            self.stream = None
+
+        self.baseFilename = os.path.abspath(self._build_log_path(datetime.now()))
+        self._current_date = current_date
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self._rotate_if_needed()
+        super().emit(record)
 
 
 def setup_logging(
@@ -50,10 +95,13 @@ def setup_logging(
     if log_file:
         log_path = Path(log_file)
         log_path.parent.mkdir(parents=True, exist_ok=True)
-        file_handler = logging.FileHandler(log_file, encoding='utf-8')
-        file_handler.setLevel(level)
-        file_handler.setFormatter(formatter)
-        logger.addHandler(file_handler)
+        file_handler = logging.FileHandler(log_path, encoding="utf-8")
+    else:
+        file_handler = DailyLogFileHandler(get_runtime_root() / "logs", encoding="utf-8")
+
+    file_handler.setLevel(level)
+    file_handler.setFormatter(formatter)
+    logger.addHandler(file_handler)
 
     return logger
 
