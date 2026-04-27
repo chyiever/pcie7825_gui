@@ -1,0 +1,20 @@
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Build outputs
+build/
+dist/
+
+# Runtime outputs
+logs/
+data/
+last_params.json
+
+# Local archives and binaries
+old_files/
+*.exe
+*.zip
+
+# Test cache
+.pytest_cache/
