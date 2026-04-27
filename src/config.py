@@ -251,6 +251,10 @@ RAW_DATA_CONFIG = {
 }
 
 # ----- RAW数据按需采样配置 -----
+PHASE_DISPLAY_CONFIG = {
+    'spectrum_update_s': 0.25,          # Phase FFT/PSD最小刷新间隔，降低主线程绘图压力
+}
+
 RAW_SAMPLING_CONFIG = {
     'time_domain_interval_s': 5.0,     # 时域图采样间隔：每1秒采样一次
     'time_domain_frames': 1,           # 时域图帧数：读取4帧做平均

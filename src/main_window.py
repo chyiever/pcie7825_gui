@@ -37,11 +37,11 @@ from config import (
     ClockSource, TriggerDirection, DataSource, DisplayMode,
     CHANNEL_NUM_OPTIONS, DATA_SOURCE_OPTIONS, CENTER_FREQ_OPTIONS,
     validate_point_num, calculate_fiber_length, calculate_data_rate_mbps,
-    OPTIMIZED_BUFFER_SIZES, MONITOR_UPDATE_INTERVALS, RAW_DATA_CONFIG, RAW_SAMPLING_CONFIG
+    OPTIMIZED_BUFFER_SIZES, MONITOR_UPDATE_INTERVALS, RAW_DATA_CONFIG, RAW_SAMPLING_CONFIG,
+    PHASE_DISPLAY_CONFIG
 )
 from wfbg7825_api import WFBG7825API, WFBG7825Error
 from acquisition_thread import AcquisitionThread, SimulatedAcquisitionThread
-from spectrum_analyzer import RealTimeSpectrumAnalyzer
 from fft_worker import FFTWorkerThread
 from time_space_plot import TimeSpacePlotWidget
 from logger import get_logger
@@ -114,7 +114,6 @@ class MainWindow(QMainWindow):
         self.api: Optional[WFBG7825API] = None
         self.acq_thread: Optional[AcquisitionThread] = None
         self.storage_manager: Optional[StorageManager] = None
-        self.spectrum_analyzer = RealTimeSpectrumAnalyzer()
         self.fft_worker = FFTWorkerThread(self)  # 新增FFT工作线程
         self._stop_in_progress = False
         self._fft_worker_signals_connected = False
@@ -143,6 +142,7 @@ class MainWindow(QMainWindow):
         # Raw data optimization tracking
         self._last_time_domain_update = 0
         self._last_fft_update = 0
+        self._last_phase_fft_update = 0
         self._raw_frame_buffer = []  # 存储用于平均的帧
 
         # 预分配x轴数组，避免重复创建
@@ -864,6 +864,9 @@ class MainWindow(QMainWindow):
         # Initialize plot curves
         self.plot_curve_1 = []
         self.spectrum_curve = self.plot_widget_2.plot(pen=pg.mkPen('#9467bd', width=1.5))
+        self.spectrum_curve.setClipToView(True)
+        self.spectrum_curve.setDownsampling(auto=True, method="peak")
+        self.spectrum_curve.setSkipFiniteCheck(True)
         self.plot_widget_2.setLogMode(x=False, y=False)
         self.monitor_curves = []
 
@@ -1568,7 +1571,10 @@ class MainWindow(QMainWindow):
         self._set_start_btn_running()
         self._set_stop_btn_enabled()
         self._set_params_enabled(False)
-        self.spectrum_analyzer.reset()
+        self._last_time_domain_update = 0
+        self._last_fft_update = 0
+        self._last_phase_fft_update = 0
+        self.fft_worker.reset_analyzer()
         self._stop_in_progress = False
 
         log.info("Acquisition started successfully")
@@ -1727,11 +1733,17 @@ class MainWindow(QMainWindow):
         if "Storage pipeline" in message and not self._stop_in_progress:
             self._on_stop()
 
-    @pyqtSlot(np.ndarray, np.ndarray, float)
-    def _on_fft_ready(self, freq: np.ndarray, spectrum: np.ndarray, df: float):
+    @pyqtSlot(object, object, float, float, str, bool)
+    def _on_fft_ready(self,
+                      freq: np.ndarray,
+                      spectrum: np.ndarray,
+                      df: float,
+                      sample_rate: float,
+                      data_type: str,
+                      psd_mode: bool):
         """处理FFT计算完成的结果"""
         try:
-            self._display_fft_result(freq, spectrum, df)
+            self._display_fft_result(freq, spectrum, df, sample_rate, data_type, psd_mode)
             log.debug(f"FFT result displayed: {len(freq)} points")
         except Exception as e:
             log.exception(f"Error displaying FFT result: {e}")
@@ -1742,28 +1754,48 @@ class MainWindow(QMainWindow):
         log.error(f"FFT calculation error: {message}")
         self.statusBar.showMessage(f"FFT Error: {message}", 3000)
 
-    def _display_fft_result(self, freq: np.ndarray, spectrum: np.ndarray, df: float):
+    def _display_fft_result(self,
+                            freq: np.ndarray,
+                            spectrum: np.ndarray,
+                            df: float,
+                            sample_rate: float,
+                            data_type: str,
+                            psd_mode: bool):
         """显示FFT计算结果"""
         try:
+            if not self.spectrum_enable_check.isChecked():
+                return
+
             self.plot_widget_2.setLogMode(x=False, y=False)
 
             # 滤波有效频率范围
-            nyquist = self._sample_rate / 2 if hasattr(self, '_sample_rate') else 500e6
-            valid_indices = (freq >= 1.0) & (freq <= nyquist)
+            nyquist = sample_rate / 2
+            if data_type == 'int':
+                valid_indices = (freq >= 1.0) & (freq <= nyquist)
+            else:
+                valid_indices = (freq >= 0) & (freq <= nyquist)
 
             freq_filtered = freq[valid_indices]
             spectrum_filtered = spectrum[valid_indices]
 
             if len(freq_filtered) > 0:
                 # 频率显示为MHz
-                freq_display = freq_filtered / 1e6
+                if data_type == 'int':
+                    freq_display = freq_filtered
+                else:
+                    freq_display = freq_filtered / 1e6
                 self.spectrum_curve.setData(freq_display, spectrum_filtered)
 
-                self._set_plot_2_auto_range(x_only=True)
-                self.plot_widget_2.setLabel('bottom', 'Frequency (MHz)',
-                                          **{'font-family': 'Times New Roman', 'font-size': '8pt'})
+                if data_type == 'int':
+                    self._set_plot_2_auto_range(x_range=(1.0, nyquist), padding=0.02)
+                    self.plot_widget_2.setLabel('bottom', 'Frequency (Hz)',
+                                              **{'font-family': 'Times New Roman', 'font-size': '8pt'})
+                else:
+                    self._set_plot_2_auto_range(x_only=True)
+                    self.plot_widget_2.setLabel('bottom', 'Frequency (MHz)',
+                                              **{'font-family': 'Times New Roman', 'font-size': '8pt'})
 
-                if self.params.display.psd_enable:
+                if psd_mode:
                     self.plot_widget_2.setLabel('left', 'PSD (dB)',
                                               **{'font-family': 'Times New Roman', 'font-size': '8pt'})
                 else:
@@ -1777,6 +1809,46 @@ class MainWindow(QMainWindow):
             log.warning(f"FFT display error: {e}")
 
     # ----- DISPLAY UPDATE -----
+
+    def _extract_phase_space_data(self,
+                                  display_data: np.ndarray,
+                                  region_idx: int,
+                                  fbg_num: int,
+                                  frame_num: int,
+                                  channel: Optional[int] = None) -> np.ndarray:
+        """Extract a single FBG trace across frames for Phase SPACE mode."""
+        end = region_idx + fbg_num * frame_num
+        if channel is None:
+            return np.asarray(display_data[region_idx:end:fbg_num])
+        return np.asarray(display_data[region_idx:end:fbg_num, channel])
+
+    def _request_spectrum_update(self,
+                                 data: np.ndarray,
+                                 sample_rate: float,
+                                 psd_mode: bool,
+                                 data_type: str):
+        """Throttle spectrum requests and delegate FFT/PSD to the worker thread."""
+        if not self.spectrum_enable_check.isChecked() or data is None or len(data) < 2:
+            return
+
+        current_time = time.time()
+        if data_type == 'int':
+            update_interval = PHASE_DISPLAY_CONFIG['spectrum_update_s']
+            if (current_time - self._last_phase_fft_update) < update_interval:
+                return
+            self._last_phase_fft_update = current_time
+        else:
+            update_interval = RAW_DATA_CONFIG['fft_update_s']
+            if (current_time - self._last_fft_update) < update_interval:
+                return
+            self._last_fft_update = current_time
+
+        self.fft_worker.calculate_fft(
+            data,
+            psd_mode=psd_mode,
+            sample_rate=sample_rate,
+            data_type=data_type,
+        )
 
     def _update_phase_display(self, data: np.ndarray, channel_num: int):
         frame_num = self.params.display.frame_num
@@ -1801,28 +1873,25 @@ class MainWindow(QMainWindow):
 
         # Check which tab is currently active for performance optimization
         current_tab = self.plot_tabs.currentIndex() if hasattr(self, 'plot_tabs') else 0
+        tab1_active = (current_tab == 0 or current_tab is None)
+        spectrum_enabled = self.spectrum_enable_check.isChecked()
 
         if self.params.display.mode == DisplayMode.SPACE:
             region_idx = min(self.params.display.region_index, fbg_num - 1)
 
             if channel_num == 1:
-                space_data = []
-                for i in range(frame_num):
-                    idx = region_idx + fbg_num * i
-                    if idx < len(display_data):
-                        space_data.append(display_data[idx])
-                space_data = np.array(space_data)
+                space_data = self._extract_phase_space_data(display_data, region_idx, fbg_num, frame_num)
 
                 # Update Tab1 (traditional plots) only if it's active or if no tabs
-                if self.time_domain_enable_check.isChecked() and (current_tab == 0 or current_tab is None):
+                if self.time_domain_enable_check.isChecked() and tab1_active:
                     # SPACE模式恢复原始形式，不提供X轴数据
                     self.plot_curve_1[0].setData(space_data)
                     for i in range(1, 4):
                         self.plot_curve_1[i].setData([])
 
-                    if self.params.display.spectrum_enable and len(space_data) > 0:
-                        self._update_spectrum(space_data, self.params.basic.scan_rate,
-                                             self.params.display.psd_enable, 'int')
+                if tab1_active and spectrum_enabled and len(space_data) > 0:
+                    self._update_spectrum(space_data, self.params.basic.scan_rate,
+                                         self.psd_check.isChecked(), 'int')
 
                 # Update Tab2 (time-space plot) if it's active and widget exists
                 if current_tab == 1 and hasattr(self, 'time_space_widget'):
@@ -1833,14 +1902,11 @@ class MainWindow(QMainWindow):
                     display_data = display_data.reshape(-1, channel_num)
 
                 # Update Tab1 only if it's active
-                if self.time_domain_enable_check.isChecked() and (current_tab == 0 or current_tab is None):
+                if self.time_domain_enable_check.isChecked() and tab1_active:
                     for ch in range(min(channel_num, 2)):
-                        space_data = []
-                        for i in range(frame_num):
-                            idx = region_idx + fbg_num * i
-                            if idx < len(display_data):
-                                space_data.append(display_data[idx, ch])
-                        space_data_array = np.array(space_data)
+                        space_data_array = self._extract_phase_space_data(
+                            display_data, region_idx, fbg_num, frame_num, channel=ch
+                        )
                         # SPACE模式恢复原始形式，不提供X轴数据
                         self.plot_curve_1[ch].setData(space_data_array)
                     for i in range(channel_num, 4):
@@ -1853,7 +1919,7 @@ class MainWindow(QMainWindow):
             # Time mode: overlay multiple frames
             if channel_num == 1:
                 # Update Tab1 only if it's active
-                if self.time_domain_enable_check.isChecked() and (current_tab == 0 or current_tab is None):
+                if self.time_domain_enable_check.isChecked() and tab1_active:
                     for i in range(min(4, frame_num)):
                         start = i * fbg_num
                         end = start + fbg_num
@@ -1863,9 +1929,9 @@ class MainWindow(QMainWindow):
                         else:
                             self.plot_curve_1[i].setData([])
 
-                    if self.params.display.spectrum_enable and fbg_num <= len(display_data):
-                        self._update_spectrum(display_data[:fbg_num], self.params.basic.scan_rate,
-                                             self.params.display.psd_enable, 'int')
+                if tab1_active and spectrum_enabled and fbg_num <= len(display_data):
+                    self._update_spectrum(display_data[:fbg_num], self.params.basic.scan_rate,
+                                         self.psd_check.isChecked(), 'int')
 
                 # Update Tab2 if it's active and widget exists
                 if current_tab == 1 and hasattr(self, 'time_space_widget'):
@@ -1875,7 +1941,7 @@ class MainWindow(QMainWindow):
                     display_data = display_data.reshape(-1, channel_num)
 
                 # Update Tab1 only if it's active
-                if self.time_domain_enable_check.isChecked() and (current_tab == 0 or current_tab is None):
+                if self.time_domain_enable_check.isChecked() and tab1_active:
                     for ch in range(min(channel_num, 4)):
                         if fbg_num <= len(display_data):
                             # Phase模式恢复原始形式，不提供X轴数据
@@ -1944,12 +2010,12 @@ class MainWindow(QMainWindow):
 
                 # FFT处理（如果启用且间隔满足）
                 fft_interval = RAW_DATA_CONFIG['fft_update_s']
-                if (self.params.display.spectrum_enable and
+                if (self.spectrum_enable_check.isChecked() and
                     (current_time - self._last_fft_update) >= fft_interval):
 
                     # 使用单帧原始数据计算FFT（1GHz采样率）
                     single_frame = data[:point_num]
-                    self.fft_worker.calculate_fft(single_frame, self.params.display.psd_enable)
+                    self.fft_worker.calculate_fft(single_frame, self.psd_check.isChecked())
                     self._last_fft_update = current_time
                     log.debug("FFT calculation requested")
 
@@ -2114,6 +2180,9 @@ class MainWindow(QMainWindow):
 
     def _update_spectrum(self, data: np.ndarray, sample_rate: float, psd_mode: bool, data_type: str):
         try:
+            self._request_spectrum_update(data, sample_rate, psd_mode, data_type)
+            return
+
             freq, spectrum, df = self.spectrum_analyzer.update(data, sample_rate, psd_mode, data_type)
 
             self.plot_widget_2.setLogMode(x=False, y=False)
