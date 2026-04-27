@@ -7,18 +7,18 @@ Usage:
     python main.py                    # Normal mode with hardware
     python main.py --simulate         # Simulation mode for testing
     python main.py --debug            # Enable debug logging
-    python main.py --log FILE         # Save log to file
+    python main.py --log FILE         # Save log to a custom file
 """
 
 import sys
 import argparse
 import traceback
 import logging
-from datetime import datetime
+from pathlib import Path
 from PyQt5.QtWidgets import QApplication, QMessageBox
 from PyQt5.QtCore import Qt
 
-from logger import setup_logging, get_logger
+from logger import setup_logging, get_logger, build_default_log_path
 
 
 def setup_high_dpi():
@@ -48,7 +48,7 @@ def main():
 Examples:
   python main.py                    # Normal operation with hardware
   python main.py --simulate         # Testing without hardware
-  python main.py --debug --log ""   # Debug mode with auto-named log file
+  python main.py --debug            # Debug mode with default local log
   python main.py -s -d -l debug.log # Simulation + debug + custom log
         """
     )
@@ -58,24 +58,22 @@ Examples:
     parser.add_argument('--debug', '-d', action='store_true',
                         help='Enable debug logging')
     parser.add_argument('--log', '-l', type=str, default=None,
-                        help='Save log to file (default: wfbg7825_YYYYMMDD_HHMMSS.log)')
+                        help='Save log to a custom file path (default: auto local daily log under logs/)')
 
     args = parser.parse_args()
 
     log_level = logging.DEBUG if args.debug else logging.INFO
-
-    log_file = args.log
-    if log_file == '':
-        log_file = f"logs/wfbg7825_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+    log_file = args.log if args.log else None
 
     setup_logging(level=log_level, log_file=log_file, console=True)
     log = get_logger("main")
+    effective_log_path = Path(log_file).resolve() if log_file else build_default_log_path()
 
     log.info("=" * 60)
     log.info("WFBG-7825 DAS Acquisition Software Starting")
     log.info(f"Simulation mode: {args.simulate}")
     log.info(f"Debug mode: {args.debug}")
-    log.info(f"Log file: {log_file or 'None'}")
+    log.info(f"Log file: {effective_log_path}")
     log.info("=" * 60)
 
     sys.excepthook = exception_hook

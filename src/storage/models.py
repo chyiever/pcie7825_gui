@@ -21,6 +21,7 @@ class StorageSessionConfig:
     queue_maxsize: int
     dtype_name: str
     file_prefix: str = ""
+    downsample_factor: int = 1
 
 
 @dataclass(frozen=True)

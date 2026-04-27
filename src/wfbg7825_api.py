@@ -18,6 +18,7 @@ import numpy as np
 from pathlib import Path
 from typing import Optional, Tuple
 import os
+import sys
 import time
 import threading
 
@@ -121,6 +122,12 @@ class WFBG7825API:
         project_root = script_dir.parent
 
         search_paths = [
+            Path(getattr(sys, "_MEIPASS", "")) / "libs" / "wfbg7825_api.dll"
+            if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS")
+            else None,
+            Path(sys.executable).resolve().parent / "libs" / "wfbg7825_api.dll"
+            if getattr(sys, "frozen", False)
+            else None,
             project_root / "libs" / "wfbg7825_api.dll",
             script_dir / "wfbg7825_api.dll",
             project_root / "wfbg7825_api.dll",
@@ -128,6 +135,8 @@ class WFBG7825API:
         ]
 
         for path in search_paths:
+            if path is None:
+                continue
             log.debug(f"Checking DLL path: {path}")
             if path.exists():
                 log.info(f"Found DLL at: {path}")
